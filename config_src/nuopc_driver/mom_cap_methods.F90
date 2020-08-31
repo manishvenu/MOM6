@@ -421,8 +421,8 @@ subroutine mom_export(ocean_public, ocean_grid, ocean_state, exportState, clock,
      jg = j + ocean_grid%jsc - jsc
      do i = isc, iec
         ig = i + ocean_grid%isc - isc
-        ocz(i,j) = ocean_public%u_surf(i,j)
-        ocm(i,j) = ocean_public%v_surf(i,j)
+        ocz(i,j) = 0.0 * ocean_public%u_surf(i,j)
+        ocm(i,j) = 0.0 * ocean_public%v_surf(i,j)
         ocz_rot(i,j) = ocean_grid%cos_rot(ig,jg)*ocz(i,j) + ocean_grid%sin_rot(ig,jg)*ocm(i,j)
         ocm_rot(i,j) = ocean_grid%cos_rot(ig,jg)*ocm(i,j) - ocean_grid%sin_rot(ig,jg)*ocz(i,j)
      enddo

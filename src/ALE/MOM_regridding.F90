@@ -328,8 +328,8 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
     dz(:) = uniformResolution(ke, coord_mode, tmpReal, &
                               US%R_to_kg_m3*(GV%Rlay(1) + 0.5*(GV%Rlay(1)-GV%Rlay(min(2,ke)))), &
                               US%R_to_kg_m3*(GV%Rlay(ke) + 0.5*(GV%Rlay(ke)-GV%Rlay(max(ke-1,1)))) )
-    if (main_parameters) call log_param(param_file, mdl, "!"//coord_res_param, dz, &
-                   trim(message), units=trim(coord_units))
+!    if (main_parameters) call log_param(param_file, mdl, "!"//coord_res_param, dz, &
+!                   trim(message), units=trim(coord_units))
   elseif (trim(string)=='PARAM') then
     ! Read coordinate resolution (main model = ALE_RESOLUTION)
     ke = GV%ke ! Use model nk by default
@@ -396,13 +396,13 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
       call MOM_error(FATAL,trim(mdl)//', initialize_regridding: '// &
                  'Mismatch in number of model levels and "'//trim(string)//'".')
     endif
-    if (main_parameters) call log_param(param_file, mdl, "!"//coord_res_param, dz, &
-               trim(message), units=coordinateUnits(coord_mode))
+!    if (main_parameters) call log_param(param_file, mdl, "!"//coord_res_param, dz, &
+!               trim(message), units=coordinateUnits(coord_mode))
   elseif (index(trim(string),'FNC1:')==1) then
     ke = GV%ke; allocate(dz(ke))
     call dz_function1( trim(string(6:)), dz )
-    if (main_parameters) call log_param(param_file, mdl, "!"//coord_res_param, dz, &
-               trim(message), units=coordinateUnits(coord_mode))
+!    if (main_parameters) call log_param(param_file, mdl, "!"//coord_res_param, dz, &
+!               trim(message), units=coordinateUnits(coord_mode))
   elseif (index(trim(string),'RFNC1:')==1) then
     ! Function used for set target interface densities
     ke = rho_function1( trim(string(7:)), rho_target )
@@ -427,8 +427,8 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
       call MOM_read_data(trim(fileName), trim(varName), dz)
     endif
     if (main_parameters) then
-      call log_param(param_file, mdl, "!"//coord_res_param, dz, &
-               trim(message), units=coordinateUnits(coord_mode))
+!      call log_param(param_file, mdl, "!"//coord_res_param, dz, &
+!               trim(message), units=coordinateUnits(coord_mode))
       call log_param(param_file, mdl, "!TARGET_DENSITIES", rho_target, &
                'HYBRID target densities for interfaces', units=coordinateUnits(coord_mode))
     endif
@@ -651,8 +651,8 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
       else
         call MOM_read_data(trim(fileName), trim(varName), z_max)
       endif
-      call log_param(param_file, mdl, "!MAXIMUM_INT_DEPTHS", z_max, &
-                 trim(message), units=coordinateUnits(coord_mode))
+!      call log_param(param_file, mdl, "!MAXIMUM_INT_DEPTHS", z_max, &
+!                 trim(message), units=coordinateUnits(coord_mode))
       call set_regrid_max_depths(CS, z_max, GV%m_to_H)
     elseif (index(trim(string),'FNC1:')==1) then
       call dz_function1( trim(string(6:)), dz_max )
@@ -661,8 +661,8 @@ subroutine initialize_regridding(CS, GV, US, max_depth, param_file, mdl, coord_m
         do k=1,nz_fixed_sfc ; dz_max(k) = dz_fixed_sfc ; enddo
       endif
       z_max(1) = 0.0 ; do K=1,ke ; z_max(K+1) = z_max(K) + dz_max(K) ; enddo
-      call log_param(param_file, mdl, "!MAXIMUM_INT_DEPTHS", z_max, &
-                 trim(message), units=coordinateUnits(coord_mode))
+!      call log_param(param_file, mdl, "!MAXIMUM_INT_DEPTHS", z_max, &
+!                 trim(message), units=coordinateUnits(coord_mode))
       call set_regrid_max_depths(CS, z_max, GV%m_to_H)
     else
       call MOM_error(FATAL,trim(mdl)//", initialize_regridding: "// &
