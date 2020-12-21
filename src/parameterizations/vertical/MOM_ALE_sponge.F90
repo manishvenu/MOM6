@@ -1027,7 +1027,7 @@ subroutine apply_ALE_sponge(h, dt, G, GV, US, CS, Time)
       sp_val(:,:,:) = 0.0
       sp_val_u(:,:,:) = 0.0
       mask_z(:,:,:) = 0.0
-       write(*,*) '02'
+!       write(*,*) '02'
       ! Interpolate from the external horizontal grid and in time
       call horiz_interp_and_extrap_tracer(CS%Ref_val_u%id, Time, 1.0, G, sp_val, mask_z, z_in, &
                                           z_edges_in, missing_value, .true., .false., .false., &
@@ -1037,7 +1037,7 @@ subroutine apply_ALE_sponge(h, dt, G, GV, US, CS, Time)
 !                                          z_edges_in, missing_value, .true., .false., .false., &
 !                                          m_to_Z=US%m_to_Z,&
 !                                          answers_2018=CS%hor_regrid_answers_2018)
-       write(*,*) '03'
+!       write(*,*) '03'
  
     call pass_var(sp_val,G%Domain)
     do j=CS%jsc,CS%jec; do I=CS%iscB,CS%iecB
@@ -1102,7 +1102,7 @@ subroutine apply_ALE_sponge(h, dt, G, GV, US, CS, Time)
 !                                          m_to_Z=US%m_to_Z,&
 !                                          answers_2018=CS%hor_regrid_answers_2018)
 
-      write(*,*) '04'
+!      write(*,*) '04'
 !     if (CS%id_sp_val_v > 0)  call post_data(CS%id_sp_val_v, sp_val, CS%diag)
 
 !      call pass_var(sp_val,G%Domain)

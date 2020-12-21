@@ -1835,7 +1835,7 @@ subroutine initialize_sponges_file(G, GV, US, use_temperature, tv, u, v, param_f
   ! Read in inverse damping rate for velocities
   if (sponge_uv) then
     if (separate_idamp_for_uv()) then
-      Idamp_u(:,:) = Idamp(:,:)
+      !Idamp_u(:,:) = Idamp(:,:)
       filename = trim(inputdir)//trim(uv_damping_file)
       call log_param(param_file, mdl, "INPUTDIR/SPONGE_UV_DAMPING_FILE", filename)
 
