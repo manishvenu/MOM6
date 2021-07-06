@@ -4,7 +4,7 @@ module MOM_domain_infra
 ! This file is part of MOM6. See LICENSE.md for the license.
 
 use MOM_coms_infra,  only : PE_here, root_PE, num_PEs
-use MOM_cpu_clock,   only : cpu_clock_begin, cpu_clock_end
+use MOM_cpu_clock_infra, only : cpu_clock_begin, cpu_clock_end
 use MOM_error_infra, only : MOM_error=>MOM_err, NOTE, WARNING, FATAL
 
 use mpp_domains_mod, only : domain2D, domain1D
@@ -39,7 +39,7 @@ public :: domain2D, domain1D, group_pass_type
 ! These interfaces are actually implemented or have explicit interfaces in this file.
 public :: create_MOM_domain, clone_MOM_domain, get_domain_components, get_domain_extent
 public :: deallocate_MOM_domain, get_global_shape, compute_block_extent
-public :: pass_var, pass_vector, fill_symmetric_edges
+public :: pass_var, pass_vector, fill_symmetric_edges, rescale_comp_data
 public :: pass_var_start, pass_var_complete, pass_vector_start, pass_vector_complete
 public :: create_group_pass, do_group_pass, start_group_pass, complete_group_pass
 public :: redistribute_array, broadcast_domain, global_field
@@ -97,6 +97,11 @@ interface fill_symmetric_edges
   module procedure fill_vector_symmetric_edges_2d !, fill_vector_symmetric_edges_3d
 !   module procedure fill_scalar_symmetric_edges_2d, fill_scalar_symmetric_edges_3d
 end interface fill_symmetric_edges
+
+!> Rescale the values of an array in its computational domain by a constant factor
+interface rescale_comp_data
+  module procedure rescale_comp_data_4d, rescale_comp_data_3d, rescale_comp_data_2d
+end interface rescale_comp_data
 
 !> Pass an array from one MOM domain to another
 interface redistribute_array
@@ -1228,6 +1233,57 @@ subroutine redistribute_array_3d(Domain1, array1, Domain2, array2, complete)
 end subroutine redistribute_array_3d
 
 
+!> Rescale the values of a 4-D array in its computational domain by a constant factor
+subroutine rescale_comp_data_4d(domain, array, scale)
+  type(MOM_domain_type),    intent(in)    :: domain !< MOM domain from which to extract information
+  real, dimension(:,:,:,:), intent(inout) :: array  !< The array which is having the data in its
+                                                    !! computational domain rescaled
+  real,                     intent(in)    :: scale  !< A scaling factor by which to multiply the
+                                                    !! values in the computational domain of array
+  integer :: is, ie, js, je
+
+  if (scale == 1.0) return
+
+  call get_simple_array_i_ind(domain, size(array,1), is, ie)
+  call get_simple_array_j_ind(domain, size(array,2), js, je)
+  array(is:ie,js:je,:,:) = scale*array(is:ie,js:je,:,:)
+
+end subroutine rescale_comp_data_4d
+
+!> Rescale the values of a 3-D array in its computational domain by a constant factor
+subroutine rescale_comp_data_3d(domain, array, scale)
+  type(MOM_domain_type),  intent(in)    :: domain !< MOM domain from which to extract information
+  real, dimension(:,:,:), intent(inout) :: array  !< The array which is having the data in its
+                                                  !! computational domain rescaled
+  real,                   intent(in)    :: scale  !< A scaling factor by which to multiply the
+                                                  !! values in the computational domain of array
+  integer :: is, ie, js, je
+
+  if (scale == 1.0) return
+
+  call get_simple_array_i_ind(domain, size(array,1), is, ie)
+  call get_simple_array_j_ind(domain, size(array,2), js, je)
+  array(is:ie,js:je,:) = scale*array(is:ie,js:je,:)
+
+end subroutine rescale_comp_data_3d
+
+!> Rescale the values of a 2-D array in its computational domain by a constant factor
+subroutine rescale_comp_data_2d(domain, array, scale)
+  type(MOM_domain_type), intent(in)    :: domain !< MOM domain from which to extract information
+  real, dimension(:,:),  intent(inout) :: array  !< The array which is having the data in its
+                                                 !! computational domain rescaled
+  real,                  intent(in)    :: scale  !< A scaling factor by which to multiply the
+                                                 !! values in the computational domain of array
+  integer :: is, ie, js, je
+
+  if (scale == 1.0) return
+
+  call get_simple_array_i_ind(domain, size(array,1), is, ie)
+  call get_simple_array_j_ind(domain, size(array,2), js, je)
+  array(is:ie,js:je) = scale*array(is:ie,js:je)
+
+end subroutine rescale_comp_data_2d
+
 !> create_MOM_domain creates and initializes a MOM_domain_type variables, based on the information
 !! provided in arguments.
 subroutine create_MOM_domain(MOM_dom, n_global, n_halo, reentrant, tripolar_N, layout, io_layout, &
@@ -1633,6 +1689,8 @@ subroutine clone_MD_to_d2D(MD_in, mpp_domain, min_halo, halo_size, symmetric, &
   if ((MD_in%io_layout(1) + MD_in%io_layout(2) > 0) .and. &
       (MD_in%layout(1)*MD_in%layout(2) > 1)) then
     call mpp_define_io_domain(mpp_domain, MD_in%io_layout)
+  else
+    call mpp_define_io_domain(mpp_domain, (/ 1, 1 /) )
   endif
 
 end subroutine clone_MD_to_d2D
@@ -1742,7 +1800,6 @@ subroutine get_domain_extent_d2D(Domain, isc, iec, jsc, jec, isd, ied, jsd, jed)
   if (present(jed)) jed = jed_
 
 end subroutine get_domain_extent_d2D
-
 
 !> Return the (potentially symmetric) computational domain i-bounds for an array
 !! passed without index specifications (i.e. indices start at 1) based on an array size.
