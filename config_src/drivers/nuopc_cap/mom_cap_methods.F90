@@ -80,13 +80,14 @@ subroutine mom_import(ocean_public, ocean_grid, importState, ice_ocean_boundary,
   integer                       , intent(inout) :: rc                 !< Return code
 
   ! Local Variables
-  integer                         :: i, j, ig, jg, n
+  integer                         :: i, j, ib, ig, jg, n
   integer                         :: isc, iec, jsc, jec
+  integer                         :: nsc ! number of stokes drift components
   character(len=128)              :: fldname
   real(ESMF_KIND_R8), allocatable :: taux(:,:)
   real(ESMF_KIND_R8), allocatable :: tauy(:,:)
-  real(ESMF_KIND_R8), allocatable :: stkx1(:,:),stkx2(:,:),stkx3(:,:)
-  real(ESMF_KIND_R8), allocatable :: stky1(:,:),stky2(:,:),stky3(:,:)
+  real(ESMF_KIND_R8), allocatable :: stkx(:,:,:)
+  real(ESMF_KIND_R8), allocatable :: stky(:,:,:)
   character(len=*)  , parameter   :: subname = '(mom_import)'
 
   rc = ESMF_SUCCESS
@@ -289,24 +290,13 @@ subroutine mom_import(ocean_public, ocean_grid, importState, ice_ocean_boundary,
   ! Partitioned Stokes Drift Components
   !----
   if ( associated(ice_ocean_boundary%ustkb) ) then
-    allocate(stkx1(isc:iec,jsc:jec))
-    allocate(stky1(isc:iec,jsc:jec))
-    allocate(stkx2(isc:iec,jsc:jec))
-    allocate(stky2(isc:iec,jsc:jec))
-    allocate(stkx3(isc:iec,jsc:jec))
-    allocate(stky3(isc:iec,jsc:jec))
+    nsc = Ice_ocean_boundary%num_stk_bands
+    allocate(stkx(isc:iec,jsc:jec,1:nsc))
+    allocate(stky(isc:iec,jsc:jec,1:nsc))
 
-    call state_getimport(importState,'eastward_partitioned_stokes_drift_1' , isc, iec, jsc, jec, stkx1,rc=rc)
+    call state_getimport(importState,'Sw_pstokes_x', isc, iec, jsc, jec, 1, nsc, stkx, rc=rc)
     if (ChkErr(rc,__LINE__,u_FILE_u)) return
-    call state_getimport(importState,'northward_partitioned_stokes_drift_1', isc, iec, jsc, jec, stky1,rc=rc)
-    if (ChkErr(rc,__LINE__,u_FILE_u)) return
-    call state_getimport(importState,'eastward_partitioned_stokes_drift_2' , isc, iec, jsc, jec, stkx2,rc=rc)
-    if (ChkErr(rc,__LINE__,u_FILE_u)) return
-    call state_getimport(importState,'northward_partitioned_stokes_drift_2', isc, iec, jsc, jec, stky2,rc=rc)
-    if (ChkErr(rc,__LINE__,u_FILE_u)) return
-    call state_getimport(importState,'eastward_partitioned_stokes_drift_3' , isc, iec, jsc, jec, stkx3,rc=rc)
-    if (ChkErr(rc,__LINE__,u_FILE_u)) return
-    call state_getimport(importState,'northward_partitioned_stokes_drift_3', isc, iec, jsc, jec, stky3,rc=rc)
+    call state_getimport(importState,'Sw_pstokes_y', isc, iec, jsc, jec, 1, nsc, stky, rc=rc)
     if (ChkErr(rc,__LINE__,u_FILE_u)) return
 
     ! rotate from true zonal/meridional to local coordinates
@@ -314,24 +304,20 @@ subroutine mom_import(ocean_public, ocean_grid, importState, ice_ocean_boundary,
        jg = j + ocean_grid%jsc - jsc
        do i = isc, iec
           ig = i + ocean_grid%isc - isc
-          ice_ocean_boundary%ustkb(i,j,1) = ocean_grid%cos_rot(ig,jg)*stkx1(i,j) &
-               - ocean_grid%sin_rot(ig,jg)*stky1(i,j)
-          ice_ocean_boundary%vstkb(i,j,1) = ocean_grid%cos_rot(ig,jg)*stky1(i,j) &
-               + ocean_grid%sin_rot(ig,jg)*stkx1(i,j)
-
-          ice_ocean_boundary%ustkb(i,j,2) = ocean_grid%cos_rot(ig,jg)*stkx2(i,j) &
-               - ocean_grid%sin_rot(ig,jg)*stky2(i,j)
-          ice_ocean_boundary%vstkb(i,j,2) = ocean_grid%cos_rot(ig,jg)*stky2(i,j) &
-               + ocean_grid%sin_rot(ig,jg)*stkx2(i,j)
-
-          ice_ocean_boundary%ustkb(i,j,3) = ocean_grid%cos_rot(ig,jg)*stkx3(i,j) &
-               - ocean_grid%sin_rot(ig,jg)*stky3(i,j)
-          ice_ocean_boundary%vstkb(i,j,3) = ocean_grid%cos_rot(ig,jg)*stky3(i,j) &
-               + ocean_grid%sin_rot(ig,jg)*stkx3(i,j)
+          !rotate
+          do ib = 1, nsc
+             ice_ocean_boundary%ustkb(i,j,ib) = ocean_grid%cos_rot(ig,jg)*stkx(i,j,ib) &
+                  - ocean_grid%sin_rot(ig,jg)*stky(i,j,ib)
+             ice_ocean_boundary%vstkb(i,j,ib) = ocean_grid%cos_rot(ig,jg)*stky(i,j,ib) &
+                  + ocean_grid%sin_rot(ig,jg)*stkx(i,j,ib)
+          enddo
+          ! apply masks
+          ice_ocean_boundary%ustkb(i,j,:) = ice_ocean_boundary%ustkb(i,j,:) * ocean_grid%mask2dT(ig,jg)
+          ice_ocean_boundary%vstkb(i,j,:) = ice_ocean_boundary%vstkb(i,j,:) * ocean_grid%mask2dT(ig,jg)
        enddo
     enddo
 
-    deallocate(stkx1,stkx2,stkx3,stky1,stky2,stky3)
+    deallocate(stkx,stky)
   endif
 
 end subroutine mom_import

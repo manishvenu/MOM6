@@ -202,7 +202,7 @@ type, public :: ice_ocean_boundary_type
   real, pointer, dimension(:,:,:) :: vstkb           => NULL() !< Stokes Drift spectrum, meridional [m/s]
                                                                !! Horizontal  - v points
                                                                !! 3rd dimension - wavenumber
-  integer :: num_stk_bands            !< Number of Stokes drift bands passed through the coupler
+  integer :: num_stk_bands = 0                                !< Number of Stokes drift bands passed through the coupler
   integer :: xtype                                            !< The type of the exchange - REGRID, REDIST or DIRECT
   type(coupler_2d_bc_type)      :: fluxes                     !< A structure that may contain an array of
                                                               !! named fields used for passive tracer fluxes.
