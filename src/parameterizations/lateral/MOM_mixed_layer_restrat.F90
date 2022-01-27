@@ -64,6 +64,10 @@ type, public :: mixedlayer_restrat_CS ; private
          MLD_filtered => NULL(), &   !< Time-filtered MLD [H ~> m or kg m-2]
          MLD_filtered_slow => NULL() !< Slower time-filtered MLD [H ~> m or kg m-2]
 
+  real    :: ustar_min      !< A minimum value of ustar to avoid numerical
+                            !! problems [Z T-1 ~> m s-1].  If the value is small enough,
+                            !! this should not affect the solution. Same quantity is used in MOM_set_visc.
+
   !>@{
   !! Diagnostic identifier
   integer :: id_urestrat_time = -1
@@ -361,7 +365,7 @@ subroutine mixedlayer_restrat_general(h, uhtr, vhtr, tv, forces, dt, MLD_in, Var
 !   U - Component
 !$OMP do
   do j=js,je ; do I=is-1,ie
-    u_star = 0.5*(forces%ustar(i,j) + forces%ustar(i+1,j))
+    u_star = max(CS%ustar_min, 0.5*(forces%ustar(i,j) + forces%ustar(i+1,j)))
     absf = 0.5*(abs(G%CoriolisBu(I,J-1)) + abs(G%CoriolisBu(I,J)))
     ! If needed, res_scaling_fac = min( ds, L_d ) / l_f
     if (res_upscale) res_scaling_fac = &
@@ -437,7 +441,7 @@ subroutine mixedlayer_restrat_general(h, uhtr, vhtr, tv, forces, dt, MLD_in, Var
 !  V- component
 !$OMP do
   do J=js-1,je ; do i=is,ie
-    u_star = 0.5*(forces%ustar(i,j) + forces%ustar(i,j+1))
+    u_star = max(CS%ustar_min, 0.5*(forces%ustar(i,j) + forces%ustar(i,j+1)))
     absf = 0.5*(abs(G%CoriolisBu(I-1,J)) + abs(G%CoriolisBu(I,J)))
     ! If needed, res_scaling_fac = min( ds, L_d ) / l_f
     if (res_upscale) res_scaling_fac = &
@@ -808,6 +812,7 @@ logical function mixedlayer_restrat_init(Time, G, GV, US, param_file, diag, CS, 
                      ! a restart file to the internal representation in this run.
   real :: flux_to_kg_per_s ! A unit conversion factor for fluxes.
   ! This include declares and sets the variable "version".
+  real :: omega      ! The Earth's rotation rate [T-1 ~> s-1]. Used to compute ustar_min in this module.
 # include "version_variable.h"
   integer :: i, j
 
@@ -884,6 +889,11 @@ logical function mixedlayer_restrat_init(Time, G, GV, US, param_file, diag, CS, 
              "A scaling coefficient for stretching/shrinking the MLD "//&
              "used in the MLE scheme. This simply multiplies MLD wherever used.",&
              units="nondim", default=1.0)
+    call get_param(param_file, mdl, "OMEGA", omega, &
+                 "The rotation rate of the earth.", units="s-1", &
+                 default=7.2921e-5, scale=US%T_to_s)
+    ! This give a minimum decay scale that is typically much less than Angstrom.
+    CS%ustar_min = 2e-4*omega*(GV%Angstrom_Z + GV%H_to_Z*GV%H_subroundoff)
   endif
 
   CS%diag => diag
