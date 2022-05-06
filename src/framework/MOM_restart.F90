@@ -1471,6 +1471,9 @@ function open_restart_units(filename, directory, G, CS, IO_handles, file_paths, 
       if (.not. fexists) filepath = trim(filepath)//".nc"
 
       inquire(file=filepath, exist=fexists)
+      
+      if (trim(filepath) == "./") fexists = .false.
+
       if (fexists) then
         nf = nf + 1
         if (present(IO_handles)) &
