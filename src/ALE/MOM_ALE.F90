@@ -386,6 +386,8 @@ subroutine ALE_register_diags(Time, G, GV, US, diag, CS)
       ' velocity by remapping. If REMAP_VEL_CONSERVE_KE is .true. then '//&
       ' this measures the change before the KE-conserving correction is applied.', &
       'W m-2', conversion=US%RZ3_T3_to_W_m2 * US%L_to_Z**2)
+  id_remap_delta_integ_u2 = -1  !< Change in depth-integrated rho0*u**2/2
+  id_remap_delta_integ_v2 = -1  !< Change in depth-integrated rho0*v**2/2
 
 end subroutine ALE_register_diags
 
