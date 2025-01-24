@@ -838,6 +838,55 @@ function register_MARBL_tracers(HI, GV, US, param_file, CS, tr_Reg, restart_CS, 
 
 end function register_MARBL_tracers
 
+
+  !> Register OBC segments for generic tracers
+subroutine register_MARBL_generic_tracer_segments(CS, GV, OBC, tr_Reg, param_file)
+  type(verticalGrid_type),     intent(in) :: GV         !< The ocean's vertical grid structure
+  type(ocean_OBC_type),        pointer    :: OBC        !< This open boundary condition type specifies whether,
+                                                        !! where, and what open boundary conditions are used.
+  type(tracer_registry_type),  pointer    :: tr_Reg     !< Pointer to the control structure for the tracer
+                                                        !! advection and diffusion module.
+  type(param_file_type),       intent(in) :: param_file !< A structure to parse for run-time parameters
+
+  ! Local variables
+  logical :: obc_has
+  ! This include declares and sets the variable "version".
+#   include "version_variable.h"
+  character(len=128), parameter :: sub_name = 'register_MARBL_generic_tracer_segments'
+  type(g_tracer_type), pointer      :: g_tracer,g_tracer_next
+  character(len=fm_string_len)      :: g_tracer_name
+  character(len=fm_string_len)      :: obc_src_file_name, obc_src_field_name
+  real :: lfac_in   ! Multiplicative factor used in setting the tracer-specific inverse length
+                    ! scales associated with inflowing tracer reservoirs at OBCs [nondim]
+  real :: lfac_out  ! Multiplicative factor used in setting the tracer-specific inverse length
+                    ! scales associated with outflowing tracer reservoirs at OBCs [nondim]
+
+  if (.NOT. associated(OBC)) return
+  !Get the tracer list
+  call generic_tracer_get_list(CS%g_tracer_list)
+  if (.NOT. associated(CS%g_tracer_list)) call MOM_error(FATAL, trim(sub_name)//&
+       ": No tracer in the list.")
+
+  g_tracer=>CS%g_tracer_list
+  do
+    call g_tracer_get_alias(g_tracer,g_tracer_name)
+    if (g_tracer_is_prog(g_tracer)) then
+        call g_tracer_get_obc_segment_props(g_tracer,g_tracer_name,obc_has ,&
+                                 obc_src_file_name,obc_src_field_name,lfac_in,lfac_out)
+        if (obc_has) then
+          call set_obgc_segments_props(OBC,g_tracer_name,obc_src_file_name,obc_src_field_name,lfac_in,lfac_out)
+          call register_obgc_segments(GV, OBC, tr_Reg, param_file, g_tracer_name)
+        endif
+    endif
+
+    !traverse the linked list till hit NULL
+    call g_tracer_get_next(g_tracer, g_tracer_next)
+    if (.NOT. associated(g_tracer_next)) exit
+    g_tracer=>g_tracer_next
+
+  enddo
+
+end subroutine register_MOM_generic_tracer_segments
 !> This subroutine initializes the CS%ntr tracer fields in tr(:,:,:,:)
 !! and it sets up the tracer output.
 subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag, OBC, CS, sponge_CSp)
