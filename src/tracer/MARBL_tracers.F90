@@ -6,7 +6,7 @@
 module MARBL_tracers
 
 ! This file is part of MOM6. See LICENSE.md for the license.
-use field_manager_mod, only: fm_string_len
+
 use MOM_coms,            only : EFP_type, root_PE, broadcast
 use MOM_debugging,       only : hchksum
 use MOM_diag_mediator,   only : diag_ctrl
@@ -21,7 +21,7 @@ use MOM_interpolate,     only : forcing_timeseries_dataset
 use MOM_interpolate,     only : forcing_timeseries_set_time_type_vars
 use MOM_interpolate,     only : map_model_time_to_forcing_time
 use MOM_io,              only : file_exists, MOM_read_data, slasher, vardesc, var_desc, query_vardesc
-use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type, set_obgc_segments_props
+use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type
 use MOM_remapping,       only : reintegrate_column
 use MOM_remapping,       only : remapping_CS, initialize_remapping, remapping_core_h
 use MOM_restart,         only : query_initialized, MOM_restart_CS, register_restart_field
@@ -293,7 +293,6 @@ type, public :: MARBL_tracers_CS ; private
   real, allocatable, dimension(:,:,:) :: &
     fesedflux_dz  !< The thickness of the cell layers in the input data [H ~> m]
 
-  type(ocean_OBC_type),   pointer :: OBC => NULL() !< A pointer to an open boundary
 end type MARBL_tracers_CS
 
 ! Module parameters
@@ -809,7 +808,6 @@ function register_MARBL_tracers(HI, GV, US, param_file, CS, tr_Reg, restart_CS, 
           flux_type=' ', implementation=' ', caller="register_MARBL_tracers")
   enddo
 
-  call register_MARBL_tracer_segments(CS, GV, tr_Reg, param_file)
 
   ! Set up memory for saved state
   call setup_saved_state(MARBL_instances%surface_flux_saved_state, HI, GV, restart_CS, &
@@ -845,8 +843,8 @@ end function register_MARBL_tracers
 
 
 
-  !> Register OBC segments for generic tracers
-subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file)
+  !> Register OBC segments for MARBL tracers
+subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
   type(MARBL_tracers_CS), pointer    :: CS         !< Pointer to the control structure for this module.
   type(verticalGrid_type),     intent(in) :: GV         !< The ocean's vertical grid structure
                                                         !! where, and what open boundary conditions are used.
@@ -854,21 +852,25 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file)
                                                         !! advection and diffusion module.
   type(param_file_type),       intent(in) :: param_file !< A structure to parse for run-time parameters
   type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
-
+  type(ocean_OBC_type),                  pointer       :: OBC     !< This open boundary condition
   ! This include declares and sets the variable "version".
 #   include "version_variable.h"
   character(len=128), parameter :: sub_name = 'register_MARBL_tracer_segments'
   integer :: n,m, ntr_id
 
-  if (.NOT. associated(CS%OBC)) return
-  do m=1,CS%ntr
-    do n=1, CS%OBC%number_of_segments
-      segment=>CS%OBC%segment(n)
-      if (.not. segment%on_pe) cycle
+  if (.NOT. associated(OBC)) return
 
+
+  do m=1,CS%ntr
+    do n=1, OBC%number_of_segments
+      segment=>OBC%segment(n)
+      if (.not. segment%on_pe) cycle
+      print*, "MRV: Tracer Look Up ", m, " in segment ", n
       call tracer_name_lookup(tr_Reg, ntr_id, CS%tracer_data(m)%tr_ptr, CS%tracer_data(m)%var_name)
+      print*, "MRV: Registering MARBL tracer tr_ptr name ", CS%tracer_data(m)%tr_ptr%name, " in segment ", n, "with ntr id ", ntr_id
       call register_segment_tracer( CS%tracer_data(m)%tr_ptr, ntr_id, param_file, GV, segment, &
-                                  OBC_array=.True.)
+                                   OBC_array=.True.)
+      segment%tr_Reg%Tr(segment%tr_Reg%ntseg)%t(:,:,:) = 2000.
     enddo
   enddo
 
@@ -909,7 +911,6 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   if (CS%ntr < 1) return
 
   CS%diag => diag
-  CS%OBC => OBC
   ! Allocate memory for surface tracer fluxes
   allocate(CS%STF(SZI_(G), SZJ_(G), CS%ntr), &
            CS%RIV_FLUXES(SZI_(G), SZJ_(G), CS%ntr), &
