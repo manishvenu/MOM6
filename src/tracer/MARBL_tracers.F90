@@ -871,6 +871,8 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
       call register_segment_tracer( CS%tracer_data(m)%tr_ptr, ntr_id, param_file, GV, segment, &
                                    OBC_array=.True.)
       segment%tr_Reg%Tr(segment%tr_Reg%ntseg)%t(:,:,:) = 2000.
+      print*, "MRV: Segment Genre: ",  segment%field(m)%genre
+
     enddo
   enddo
 
@@ -1435,7 +1437,7 @@ subroutine MARBL_tracers_column_physics(h_old, h_new, ea, eb, fluxes, dt, G, GV,
         call MARBL_instances%StatusLog%log_error_trace("MARBL_instances%surface_flux_compute()", &
             "MARBL_tracers_column_physics")
       endif
-      call print_marbl_log(MARBL_instances%StatusLog)
+      call print_marbl_log(MARBL_instances%StatusLog, G, i, j)
       call MARBL_instances%StatusLog%erase()
 
       ! iv. Copy output that MOM6 needs to hold on to

@@ -827,6 +827,7 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
         !Set a flag so that these can be distinguished from native tracers as they may need
         !extra steps for preparation and handling.
         segment%field(m)%genre = 'obgc'
+        print*,'MRV: OBC segment ',n,' obgc tracer ', m
         !Query the obgc segment properties by traversing the linkedlist
         call get_obgc_segments_props(obgc_segments_props_list,fields(m),filename,fieldname,&
                                      segment%field(m)%resrv_lfac_in,segment%field(m)%resrv_lfac_out)
@@ -4196,6 +4197,7 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
                 ! Using the h remapping approach
                 ! Pretty sure we need to check for source/target grid consistency here
                 segment%field(m)%buffer_dst(I,j,:) = 0.0  ! initialize remap destination buffer
+                print*, 'MRV: update_OBC_segment_data: segment%field(m)%name: ', segment%field(m)%name
                 if (G%mask2dCu(I,j)>0.) then
                   net_dz_src = sum( segment%field(m)%dz_src(I,j,:) )
                   net_dz_int = sum( dz(i+ishift,j,:) )
@@ -4503,6 +4505,7 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
         endif
       elseif (trim(segment%field(m)%genre) == 'obgc') then
         nt=get_tracer_index(segment,trim(segment%field(m)%name))
+        print*, 'MRV: update_OBC_segment_data in obct: segment%field(m)%name: ', segment%field(m)%name
         if (nt < 0) then
           call MOM_error(FATAL,"update_OBC_segment_data: Did not find tracer "//trim(segment%field(m)%name))
         endif
