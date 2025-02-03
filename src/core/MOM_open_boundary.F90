@@ -4313,7 +4313,6 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
             endif
           endif
           segment%field(m)%buffer_dst(:,:,:) = segment%field(m)%value
-          print*, 'MRV: update_OBC_segment_data with value: ', segment%field(m)%value
         endif
       endif
     enddo
@@ -4509,15 +4508,12 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
           segment%tr_Reg%Tr(2)%OBC_inflow_conc = segment%field(m)%value
         endif
       elseif (trim(segment%field(m)%genre) == 'obgc') then
-        print*, 'MRV: update_OBC_segment_data: genre is obgc'
         nt=get_tracer_index(segment,trim(segment%field(m)%name))
-        print*, 'MRV: nt: ', trim(segment%field(m)%name)
-! registering tracers doesn't go here!
+        ! registering tracers doesn't go here!
         if (nt < 0) then
           call MOM_error(FATAL,"update_OBC_segment_data: Did not find tracer "//trim(segment%field(m)%name))
         endif
         if (allocated(segment%field(m)%buffer_dst)) then
-          print*, 'MRV: Fill in OBC in obgc: ', trim(segment%field(m)%name)
           do k=1,nz; do j=js_obc2, je_obc; do i=is_obc2,ie_obc
             segment%tr_Reg%Tr(nt)%t(i,j,k) = segment%field(m)%buffer_dst(i,j,k)
           enddo ; enddo ; enddo
