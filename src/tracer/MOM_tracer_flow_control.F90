@@ -391,7 +391,6 @@ subroutine call_tracer_register_obc_segments(GV, param_file, CS, tr_Reg, OBC)
   if (CS%use_MOM_generic_tracer) &
       call register_MOM_generic_tracer_segments(CS%MOM_generic_tracer_CSp, GV, OBC, tr_Reg, param_file)
   if (CS%use_MARBL_tracers) &
-      print*, "MRV: CALL MARBL TRACERS REGISTER SEGMENTS"
       call register_MARBL_tracer_segments(CS%MARBL_tracers_CSp, GV,tr_Reg, param_file, OBC)
 
 end subroutine call_tracer_register_obc_segments
