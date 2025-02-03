@@ -908,7 +908,6 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   if (CS%ntr < 1) return
 
   CS%diag => diag
-  
   ! Allocate memory for surface tracer fluxes
   allocate(CS%STF(SZI_(G), SZJ_(G), CS%ntr), &
            CS%RIV_FLUXES(SZI_(G), SZJ_(G), CS%ntr), &
