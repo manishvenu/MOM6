@@ -822,12 +822,15 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
       if (m <= num_fields) then
         !These are tracers with segments specified in MOM6 style override files
         call parse_segment_data_str(trim(segstr), m, trim(fields(m)), value, filename, fieldname)
+        if (m > 5) then
+          segment%field(m)%genre = 'obgc'
+        endif
       else
         !These are obgc tracers with segments specified by external modules.
         !Set a flag so that these can be distinguished from native tracers as they may need
         !extra steps for preparation and handling.
         segment%field(m)%genre = 'obgc'
-        print*,'MRV: OBC segment ',n,' obgc tracer ', m
+        
         !Query the obgc segment properties by traversing the linkedlist
         call get_obgc_segments_props(obgc_segments_props_list,fields(m),filename,fieldname,&
                                      segment%field(m)%resrv_lfac_in,segment%field(m)%resrv_lfac_out)
@@ -845,6 +848,7 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
         OBC%needs_IO_for_data = .true. ! At least one segment is using I/O for OBC data
 !       segment%values_needed = .true. ! Indicates that i/o will be needed for this segment
         segment%field(m)%name = trim(fields(m))
+
         ! The scale factor for tracers may also be set in register_segment_tracer, and a constant input
         ! value is rescaled there.
         segment%field(m)%scale = scale_factor_from_name(fields(m), GV, US, segment%tr_Reg)
@@ -3946,6 +3950,7 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
 
     allocate(dz_stack(GV%ke), source=0.0)
     do m = 1,segment%num_fields
+
       !This field may not require a high frequency OBC segment update and might be allowed
       !a less frequent update as set by the parameter update_OBC_period_max in MOM.F90.
       !Cycle if it is not the time to update OBC segment data for this field.
@@ -4197,8 +4202,6 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
                 ! Using the h remapping approach
                 ! Pretty sure we need to check for source/target grid consistency here
                 segment%field(m)%buffer_dst(I,j,:) = 0.0  ! initialize remap destination buffer
-                print*, 'MRV: Iteration to the ABIO level segment%field(m)%name', segment%field(m)%name
-                ! ABIO doesn't make it here
                 if (G%mask2dCu(I,j)>0.) then
                   net_dz_src = sum( segment%field(m)%dz_src(I,j,:) )
                   net_dz_int = sum( dz(i+ishift,j,:) )
@@ -4310,6 +4313,7 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
             endif
           endif
           segment%field(m)%buffer_dst(:,:,:) = segment%field(m)%value
+          print*, 'MRV: update_OBC_segment_data with value: ', segment%field(m)%value
         endif
       endif
     enddo
@@ -4505,12 +4509,15 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
           segment%tr_Reg%Tr(2)%OBC_inflow_conc = segment%field(m)%value
         endif
       elseif (trim(segment%field(m)%genre) == 'obgc') then
+        print*, 'MRV: update_OBC_segment_data: genre is obgc'
         nt=get_tracer_index(segment,trim(segment%field(m)%name))
+        print*, 'MRV: nt: ', trim(segment%field(m)%name)
 ! registering tracers doesn't go here!
         if (nt < 0) then
           call MOM_error(FATAL,"update_OBC_segment_data: Did not find tracer "//trim(segment%field(m)%name))
         endif
         if (allocated(segment%field(m)%buffer_dst)) then
+          print*, 'MRV: Fill in OBC in obgc: ', trim(segment%field(m)%name)
           do k=1,nz; do j=js_obc2, je_obc; do i=is_obc2,ie_obc
             segment%tr_Reg%Tr(nt)%t(i,j,k) = segment%field(m)%buffer_dst(i,j,k)
           enddo ; enddo ; enddo

@@ -21,7 +21,7 @@ use MOM_interpolate,     only : forcing_timeseries_dataset
 use MOM_interpolate,     only : forcing_timeseries_set_time_type_vars
 use MOM_interpolate,     only : map_model_time_to_forcing_time
 use MOM_io,              only : file_exists, MOM_read_data, slasher, vardesc, var_desc, query_vardesc
-use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type
+use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type, parse_segment_manifest_str
 use MOM_remapping,       only : reintegrate_column
 use MOM_remapping,       only : remapping_CS, initialize_remapping, remapping_core_h
 use MOM_restart,         only : query_initialized, MOM_restart_CS, register_restart_field
@@ -52,6 +52,7 @@ public register_MARBL_tracers, initialize_MARBL_tracers, register_MARBL_tracer_s
 public MARBL_tracers_column_physics, MARBL_tracers_surface_state
 public MARBL_tracers_set_forcing
 public MARBL_tracers_stock, MARBL_tracers_get, MARBL_tracers_end
+integer, parameter         :: MAX_OBC_FIELDS = 100  !< Maximum number of data fields needed for OBC segments
 
 ! A note on unit descriptions in comments: MOM6 uses units that can be rescaled for dimensional
 ! consistency testing. These are noted in comments with units like Z, H, L, and T, along with
@@ -853,10 +854,12 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
   type(param_file_type),       intent(in) :: param_file !< A structure to parse for run-time parameters
   type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
   type(ocean_OBC_type),                  pointer       :: OBC     !< This open boundary condition
+
   ! This include declares and sets the variable "version".
 #   include "version_variable.h"
   character(len=128), parameter :: sub_name = 'register_MARBL_tracer_segments'
-  integer :: n,m, ntr_id
+  integer :: n,m, ntr_id,
+
 
   if (.NOT. associated(OBC)) return
 
@@ -868,9 +871,6 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
       call tracer_name_lookup(tr_Reg, ntr_id, CS%tracer_data(m)%tr_ptr, CS%tracer_data(m)%var_name)
       call register_segment_tracer( CS%tracer_data(m)%tr_ptr, ntr_id, param_file, GV, segment, &
                                    OBC_array=.True.)
-      segment%tr_Reg%Tr(segment%tr_Reg%ntseg)%t(:,:,:) = 2000.
-      
-      OBC%num_obgc_tracers = OBC%num_obgc_tracers+1
     enddo
   enddo
 
