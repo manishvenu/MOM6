@@ -865,14 +865,12 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
     do n=1, OBC%number_of_segments
       segment=>OBC%segment(n)
       if (.not. segment%on_pe) cycle
-      print*, "MRV: Tracer Look Up ", m, " in segment ", n
       call tracer_name_lookup(tr_Reg, ntr_id, CS%tracer_data(m)%tr_ptr, CS%tracer_data(m)%var_name)
-      print*, "MRV: Registering MARBL tracer tr_ptr name ", CS%tracer_data(m)%tr_ptr%name, " in segment ", n, "with ntr id ", ntr_id
       call register_segment_tracer( CS%tracer_data(m)%tr_ptr, ntr_id, param_file, GV, segment, &
                                    OBC_array=.True.)
       segment%tr_Reg%Tr(segment%tr_Reg%ntseg)%t(:,:,:) = 2000.
-      print*, "MRV: Segment Genre: ",  segment%field(m)%genre
-
+      
+      OBC%num_obgc_tracers = OBC%num_obgc_tracers+1
     enddo
   enddo
 
