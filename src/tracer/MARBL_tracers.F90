@@ -21,14 +21,14 @@ use MOM_interpolate,     only : forcing_timeseries_dataset
 use MOM_interpolate,     only : forcing_timeseries_set_time_type_vars
 use MOM_interpolate,     only : map_model_time_to_forcing_time
 use MOM_io,              only : file_exists, MOM_read_data, slasher, vardesc, var_desc, query_vardesc
-use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type, parse_segment_manifest_str
+use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type
 use MOM_remapping,       only : reintegrate_column
 use MOM_remapping,       only : remapping_CS, initialize_remapping, remapping_core_h
 use MOM_restart,         only : query_initialized, MOM_restart_CS, register_restart_field
 use MOM_spatial_means,   only : global_mass_int_EFP
 use MOM_sponge,          only : set_up_sponge_field, sponge_CS
 use MOM_time_manager,    only : time_type
-use MOM_tracer_registry, only : register_tracer,tracer_type, tracer_registry_type, tracer_name_lookup
+use MOM_tracer_registry, only : register_tracer, tracer_name_lookup
 use MOM_tracer_types,    only : tracer_type, tracer_registry_type
 use MOM_tracer_diabatic, only : tracer_vertdiff, applyTracerBoundaryFluxesInOut
 use MOM_tracer_initialization_from_Z, only : MOM_initialize_tracer_from_Z
@@ -52,7 +52,6 @@ public register_MARBL_tracers, initialize_MARBL_tracers, register_MARBL_tracer_s
 public MARBL_tracers_column_physics, MARBL_tracers_surface_state
 public MARBL_tracers_set_forcing
 public MARBL_tracers_stock, MARBL_tracers_get, MARBL_tracers_end
-integer, parameter         :: MAX_OBC_FIELDS = 100  !< Maximum number of data fields needed for OBC segments
 
 ! A note on unit descriptions in comments: MOM6 uses units that can be rescaled for dimensional
 ! consistency testing. These are noted in comments with units like Z, H, L, and T, along with
@@ -293,7 +292,6 @@ type, public :: MARBL_tracers_CS ; private
   ! TODO: this thickness does not need to be 3D, but that's a problem for future Mike
   real, allocatable, dimension(:,:,:) :: &
     fesedflux_dz  !< The thickness of the cell layers in the input data [H ~> m]
-
 end type MARBL_tracers_CS
 
 ! Module parameters
@@ -809,7 +807,6 @@ function register_MARBL_tracers(HI, GV, US, param_file, CS, tr_Reg, restart_CS, 
           flux_type=' ', implementation=' ', caller="register_MARBL_tracers")
   enddo
 
-
   ! Set up memory for saved state
   call setup_saved_state(MARBL_instances%surface_flux_saved_state, HI, GV, restart_CS, &
       CS%tracers_may_reinit, CS%surface_flux_saved_state)
@@ -911,6 +908,7 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   if (CS%ntr < 1) return
 
   CS%diag => diag
+  
   ! Allocate memory for surface tracer fluxes
   allocate(CS%STF(SZI_(G), SZJ_(G), CS%ntr), &
            CS%RIV_FLUXES(SZI_(G), SZJ_(G), CS%ntr), &

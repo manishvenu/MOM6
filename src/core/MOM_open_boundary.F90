@@ -830,7 +830,6 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
         !Set a flag so that these can be distinguished from native tracers as they may need
         !extra steps for preparation and handling.
         segment%field(m)%genre = 'obgc'
-        
         !Query the obgc segment properties by traversing the linkedlist
         call get_obgc_segments_props(obgc_segments_props_list,fields(m),filename,fieldname,&
                                      segment%field(m)%resrv_lfac_in,segment%field(m)%resrv_lfac_out)
@@ -848,7 +847,6 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
         OBC%needs_IO_for_data = .true. ! At least one segment is using I/O for OBC data
 !       segment%values_needed = .true. ! Indicates that i/o will be needed for this segment
         segment%field(m)%name = trim(fields(m))
-
         ! The scale factor for tracers may also be set in register_segment_tracer, and a constant input
         ! value is rescaled there.
         segment%field(m)%scale = scale_factor_from_name(fields(m), GV, US, segment%tr_Reg)
@@ -3950,7 +3948,6 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
 
     allocate(dz_stack(GV%ke), source=0.0)
     do m = 1,segment%num_fields
-
       !This field may not require a high frequency OBC segment update and might be allowed
       !a less frequent update as set by the parameter update_OBC_period_max in MOM.F90.
       !Cycle if it is not the time to update OBC segment data for this field.
@@ -4509,7 +4506,6 @@ subroutine update_OBC_segment_data(G, GV, US, OBC, tv, h, Time)
         endif
       elseif (trim(segment%field(m)%genre) == 'obgc') then
         nt=get_tracer_index(segment,trim(segment%field(m)%name))
-        ! registering tracers doesn't go here!
         if (nt < 0) then
           call MOM_error(FATAL,"update_OBC_segment_data: Did not find tracer "//trim(segment%field(m)%name))
         endif
