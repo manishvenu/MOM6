@@ -855,7 +855,7 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
   ! This include declares and sets the variable "version".
 #   include "version_variable.h"
   character(len=128), parameter :: sub_name = 'register_MARBL_tracer_segments'
-  integer :: n,m, ntr_id,
+  integer :: n,m, ntr_id
 
 
   if (.NOT. associated(OBC)) return

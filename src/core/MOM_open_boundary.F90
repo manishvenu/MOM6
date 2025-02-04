@@ -822,8 +822,12 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
       if (m <= num_fields) then
         !These are tracers with segments specified in MOM6 style override files
         call parse_segment_data_str(trim(segstr), m, trim(fields(m)), value, filename, fieldname)
-        if (m > 5) then
-          segment%field(m)%genre = 'obgc'
+        if (.not. (trim(ADJUSTL(fields(m))) == 'V' .or. trim(ADJUSTL(fields(m))) == 'DVDX' .or. trim(ADJUSTL(fields(m))) == 'Vamp' & 
+            .or. trim(ADJUSTL(fields(m))) == 'Vphase' .or. trim(ADJUSTL(fields(m))) == 'Uamp' .or. trim(ADJUSTL(fields(m))) == 'Uphase' .or. & 
+            trim(ADJUSTL(fields(m))) == 'SSHamp' .or. trim(ADJUSTL(fields(m))) == 'SSHphase' .or. trim(ADJUSTL(fields(m))) == 'U' .or. & 
+            trim(ADJUSTL(fields(m))) == 'DUDY' .or. trim(ADJUSTL(fields(m))) == 'SSH' .or. trim(ADJUSTL(fields(m))) == 'TEMP' .or. trim(ADJUSTL(fields(m))) == 'SALT')) then
+              segment%field(m)%genre = 'obgc'
+
         endif
       else
         !These are obgc tracers with segments specified by external modules.
