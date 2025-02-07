@@ -21,7 +21,7 @@ use MOM_interpolate,     only : forcing_timeseries_dataset
 use MOM_interpolate,     only : forcing_timeseries_set_time_type_vars
 use MOM_interpolate,     only : map_model_time_to_forcing_time
 use MOM_io,              only : file_exists, MOM_read_data, slasher, vardesc, var_desc, query_vardesc
-use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type
+use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type, parse_segment_data_str, parse_segment_manifest_str
 use MOM_remapping,       only : reintegrate_column
 use MOM_remapping,       only : remapping_CS, initialize_remapping, remapping_core_h
 use MOM_restart,         only : query_initialized, MOM_restart_CS, register_restart_field
@@ -52,6 +52,7 @@ public register_MARBL_tracers, initialize_MARBL_tracers, register_MARBL_tracer_s
 public MARBL_tracers_column_physics, MARBL_tracers_surface_state
 public MARBL_tracers_set_forcing
 public MARBL_tracers_stock, MARBL_tracers_get, MARBL_tracers_end
+integer, parameter         :: MAX_OBC_FIELDS = 100  !< Maximum number of data fields needed for OBC segments
 
 ! A note on unit descriptions in comments: MOM6 uses units that can be rescaled for dimensional
 ! consistency testing. These are noted in comments with units like Z, H, L, and T, along with
@@ -855,9 +856,14 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
   ! This include declares and sets the variable "version".
 #   include "version_variable.h"
   character(len=128), parameter :: sub_name = 'register_MARBL_tracer_segments'
-  integer :: n,m, ntr_id
-
-
+  integer :: n,m, ntr_id, index, num_fields
+  character(len=32), dimension(MAX_OBC_FIELDS) :: fields  ! segment field names
+  logical :: does_tracer_file_exist = .False.
+  character(len=1024) :: segstr
+  character(len=256) :: filename
+  character(len=32)  :: fieldname
+  character(len=20)  :: segnam
+  real               :: value 
   if (.NOT. associated(OBC)) return
 
 
@@ -865,9 +871,25 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
     do n=1, OBC%number_of_segments
       segment=>OBC%segment(n)
       if (.not. segment%on_pe) cycle
+
+
+      ! Get Specific Param Information
+      write(segnam,"('OBC_SEGMENT_',i3.3,'_DATA')") n
+      segstr = ''
+      call get_param(param_file, 'MARBL_tracers', segnam, segstr)
+      call parse_segment_manifest_str(trim(segstr), num_fields, fields)
+      ! define new index to get to MARBL tracer fields
+      ! At some point we will need a boolean to look in the DATA field, but for now
+      ! we can do ,length of fields - number of marbl tracers  + m to get to the right field
+      index = num_fields - CS%ntr + m
+      call parse_segment_data_str(trim(segstr), index, trim(fields(index)), value, filename, fieldname)
+      print*, 'MRV: filename = ', trim(filename)
+      if (trim(filename) /= 'none') then
+        does_tracer_file_exist = .True.
+      endif
       call tracer_name_lookup(tr_Reg, ntr_id, CS%tracer_data(m)%tr_ptr, CS%tracer_data(m)%var_name)
       call register_segment_tracer( CS%tracer_data(m)%tr_ptr, ntr_id, param_file, GV, segment, &
-                                   OBC_array=.True.)
+                                   OBC_array=does_tracer_file_exist)
     enddo
   enddo
 
