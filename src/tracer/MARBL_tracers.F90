@@ -859,7 +859,7 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
   integer :: n,m, ntr_id, index, num_fields
   character(len=32), dimension(MAX_OBC_FIELDS) :: fields  ! segment field names
   logical :: does_tracer_file_exist = .False.
-  character(len=1024) :: segstr
+  character(len=10024) :: segstr
   character(len=256) :: filename
   character(len=32)  :: fieldname
   character(len=20)  :: segnam

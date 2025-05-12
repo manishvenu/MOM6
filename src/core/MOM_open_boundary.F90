@@ -436,7 +436,7 @@ subroutine open_boundary_config(G, US, param_file, OBC)
   integer :: l ! For looping over segments
   logical :: debug, debug_OBC, mask_outside, reentrant_x, reentrant_y
   character(len=15) :: segment_param_str ! The run-time parameter name for each segment
-  character(len=1024) :: segment_str      ! The contents (rhs) for parameter "segment_param_str"
+  character(len=10024) :: segment_str      ! The contents (rhs) for parameter "segment_param_str"
   character(len=200) :: config1          ! String for OBC_USER_CONFIG
   real               :: Lscale_in, Lscale_out ! parameters controlling tracer values at the boundaries [L ~> m]
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
@@ -733,7 +733,7 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
   type(param_file_type),        intent(in)    :: PF  !< Parameter file handle
 
   integer :: n, m, num_fields, mm
-  character(len=1024) :: segstr
+  character(len=10024) :: segstr
   character(len=256) :: filename
   character(len=20)  :: segnam, suffix
   character(len=32)  :: fieldname
@@ -1808,7 +1808,7 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
 
   ! Local variables
   integer :: n,m,num_fields,na, salt_ind
-  character(len=1024) :: segstr
+  character(len=10024) :: segstr
   character(len=256) :: filename
   character(len=20)  :: segnam, suffix
   character(len=32)  :: fieldname
