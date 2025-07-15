@@ -21,7 +21,7 @@ use MOM_interpolate,     only : forcing_timeseries_dataset
 use MOM_interpolate,     only : forcing_timeseries_set_time_type_vars
 use MOM_interpolate,     only : map_model_time_to_forcing_time
 use MOM_io,              only : file_exists, MOM_read_data, slasher, vardesc, var_desc, query_vardesc
-use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type, parse_segment_data_str, parse_segment_manifest_str
+use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type, parse_segment_data_str, parse_segment_manifest_str, fill_obgc_segments
 use MOM_remapping,       only : reintegrate_column
 use MOM_remapping,       only : remapping_CS, initialize_remapping, remapping_core_h
 use MOM_restart,         only : query_initialized, MOM_restart_CS, register_restart_field
@@ -913,7 +913,7 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
                                                                        !! call to register_MARBL_tracers.
   type(sponge_CS),                       pointer       :: sponge_CSp   !< A pointer to the control structure
                                                                        !! for the sponges, if they are in use.
-
+  type(OBC_segment_type), pointer :: segment => NULL()
   ! Local variables
   character(len=200) :: log_message
   character(len=48) :: name       ! A variable's name in a NetCDF file.
@@ -925,7 +925,8 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   logical :: fesedflux_has_edges, fesedflux_use_missing
   real    :: fesedflux_missing
   integer :: i, j, k, kbot, m, diag_size
-
+  integer :: n, ntr_id, index, num_fields
+  
   if (.not.associated(CS)) return
   if (CS%ntr < 1) return
 
@@ -1210,6 +1211,14 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
     end select
   endif
 
+  
+  print*, 'MRV: we are in initialization'
+  do m=1,CS%ntr
+
+      print*, 'MRV: we got into here = ', CS%tracer_data(m)%var_name
+      call fill_obgc_segments(G, GV, OBC, CS%tracer_data(m)%tr, CS%tracer_data(m)%var_name)
+
+  enddo
 end subroutine initialize_MARBL_tracers
 
 !> This subroutine is used to register tracer fields and subroutines
