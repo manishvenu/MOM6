@@ -19,7 +19,7 @@ implicit none ; private
 ! These are hard-coded limits that are used in the following code.  They should be set
 ! generously enough not to impose any significant limitations.
 integer, parameter, public :: MAX_PARAM_FILES = 5 !< Maximum number of parameter files.
-integer, parameter :: INPUT_STR_LENGTH = 10024 !< Maximum line length in parameter file.  Lines that
+integer, parameter :: INPUT_STR_LENGTH = 1024 !< Maximum line length in parameter file.  Lines that
                                               !! are combined by ending in '\' or '&' can exceed
                                               !! this limit after merging.
 integer, parameter :: FILENAME_LENGTH = 200   !< Maximum number of characters in file names.

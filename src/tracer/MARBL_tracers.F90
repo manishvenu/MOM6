@@ -859,7 +859,7 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
   integer :: n,m, ntr_id, index, num_fields
   character(len=32), dimension(MAX_OBC_FIELDS) :: fields  ! segment field names
   logical :: does_tracer_file_exist = .False.
-  character(len=10024) :: segstr
+  character(len=1024) :: segstr
   character(len=256) :: filename
   character(len=32)  :: fieldname
   character(len=20)  :: segnam
@@ -1211,13 +1211,9 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
     end select
   endif
 
-  
-  print*, 'MRV: we are in initialization'
+  !TODO: Need to check if there are any OBC segments for MARBL tracers
   do m=1,CS%ntr
-
-      print*, 'MRV: we got into here = ', CS%tracer_data(m)%var_name
       call fill_obgc_segments(G, GV, OBC, CS%tracer_data(m)%tr, CS%tracer_data(m)%var_name)
-
   enddo
 end subroutine initialize_MARBL_tracers
 
