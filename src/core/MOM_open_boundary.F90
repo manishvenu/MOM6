@@ -750,8 +750,11 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
   type(external_tracers_segments_props), pointer :: obgc_segments_props_list =>NULL()
   !will be able to dynamically switch between sub-sampling refined grid data or model grid
   integer :: IO_needs(3) ! Sums to determine global OBC data use and update patterns.
+  integer :: num_standard_tracers = 5 ! U, V, SSH, TEMP, SALT
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
 
+  if (OBC%n_tide_constituents > 0) num_standard_tracers = num_standard_tracers + 6 ! Uamp, Uphase, Vamp, Vphase, SSHamp, SSHphase
+  print *, 'MRV: NUmber Standard Tracers ', num_standard_tracers
   ! There is a problem with the order of the OBC initialization
   ! with respect to ALE_init. Currently handling this by copying the
   ! param file so that I can use it later in step_MOM in order to finish
@@ -818,14 +821,15 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
     do m=1,segment%num_fields
       if (m <= num_fields) then
         !These are tracers with segments specified in MOM6 style override files
-        call parse_segment_data_str(trim(segstr), m, trim(fields(m)), value, filename, fieldname)
-        if (.not. (trim(ADJUSTL(fields(m))) == 'V' .or. trim(ADJUSTL(fields(m))) == 'DVDX' .or. trim(ADJUSTL(fields(m))) == 'Vamp' & 
-            .or. trim(ADJUSTL(fields(m))) == 'Vphase' .or. trim(ADJUSTL(fields(m))) == 'Uamp' .or. trim(ADJUSTL(fields(m))) == 'Uphase' .or. & 
-            trim(ADJUSTL(fields(m))) == 'SSHamp' .or. trim(ADJUSTL(fields(m))) == 'SSHphase' .or. trim(ADJUSTL(fields(m))) == 'U' .or. & 
-            trim(ADJUSTL(fields(m))) == 'DUDY' .or. trim(ADJUSTL(fields(m))) == 'SSH' .or. trim(ADJUSTL(fields(m))) == 'TEMP' .or. trim(ADJUSTL(fields(m))) == 'SALT')) then
-              segment%field(m)%genre = 'obgc'
-              OBC%num_obgc_tracers = OBC%num_obgc_tracers+1
 
+
+        call parse_segment_data_str(trim(segstr), m, trim(fields(m)), value, filename, fieldname)
+
+        ! If there any MARBL tracers, set the MARBL tracer genre to OBGC & increment obgc tracers (MARBL takes advantage of obgc functions)
+        if (m > num_standard_tracers) then
+            print *, 'MRV: OBC: MARBL tracer ', trim(fields(m)), ' genre set to obgc'
+            segment%field(m)%genre = 'obgc'
+            OBC%num_obgc_tracers = OBC%num_obgc_tracers+1 ! For use in tracer reservoir setup
         endif
       else
         !These are obgc tracers with segments specified by external modules.
@@ -1804,7 +1808,7 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
   logical,                intent(in) :: use_temperature !< If true, T and S are used
 
   ! Local variables
-  integer :: n,m,num_fields,na, salt_ind
+  integer :: n,m,num_fields,na
   character(len=PF%max_line_len) :: segstr
   character(len=256) :: filename
   character(len=20)  :: segnam, suffix
