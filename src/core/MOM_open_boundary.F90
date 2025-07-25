@@ -824,6 +824,7 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
             trim(ADJUSTL(fields(m))) == 'SSHamp' .or. trim(ADJUSTL(fields(m))) == 'SSHphase' .or. trim(ADJUSTL(fields(m))) == 'U' .or. & 
             trim(ADJUSTL(fields(m))) == 'DUDY' .or. trim(ADJUSTL(fields(m))) == 'SSH' .or. trim(ADJUSTL(fields(m))) == 'TEMP' .or. trim(ADJUSTL(fields(m))) == 'SALT')) then
               segment%field(m)%genre = 'obgc'
+              OBC%num_obgc_tracers = OBC%num_obgc_tracers+1
 
         endif
       else
@@ -1835,27 +1836,12 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
           endif
         endif
         if (fields(m) == 'SALT') then
-          salt_ind = m ! Bad coding to get MARBL tracer index, assuming after the salt command
           if (segment%is_E_or_W_2) then
             OBC%tracer_x_reservoirs_used(2) = .true.
           else
             OBC%tracer_y_reservoirs_used(2) = .true.
           endif
         endif
-
-      endif
-      if (.not. (trim(ADJUSTL(fields(m))) == 'V' .or. trim(ADJUSTL(fields(m))) == 'DVDX' .or. trim(ADJUSTL(fields(m))) == 'Vamp' & 
-      .or. trim(ADJUSTL(fields(m))) == 'Vphase' .or. trim(ADJUSTL(fields(m))) == 'Uamp' .or. trim(ADJUSTL(fields(m))) == 'Uphase' .or. & 
-      trim(ADJUSTL(fields(m))) == 'SSHamp' .or. trim(ADJUSTL(fields(m))) == 'SSHphase' .or. trim(ADJUSTL(fields(m))) == 'U' .or. & 
-      trim(ADJUSTL(fields(m))) == 'DUDY' .or. trim(ADJUSTL(fields(m))) == 'SSH' .or. trim(ADJUSTL(fields(m))) == 'TEMP' .or. trim(ADJUSTL(fields(m))) == 'SALT')) then
-        print*, 'MRV: parse_for_tracer_Reservoirs: Tracer ', trim(fields(m)), ' at index ', 2+m-salt_ind
-        ! Fix this code, but we need a way to properly account for the number of tracers we are on
-        if (segment%is_E_or_W_2) then
-          OBC%tracer_x_reservoirs_used(2 + m - salt_ind) = .true.
-        else
-          OBC%tracer_y_reservoirs_used(2 + m - salt_ind) = .true.
-        endif
-
       endif
     enddo
     ! Alternately, set first two to true if use_temperature is true
@@ -1879,6 +1865,7 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
        !This logic assumes all external tarcers need a reservoir
        !The segments for tracers are not initialized yet (that happens later in initialize_segment_data())
        !so we cannot query to determine if this tracer needs a reservoir.
+      print*, 'MRV: parse_for_tracer_Reservoirs: Tracer ', trim(fields(m)), ' at index ', m+na
        if (segment%is_E_or_W_2) then
         OBC%tracer_x_reservoirs_used(m+na) = .true.
        else

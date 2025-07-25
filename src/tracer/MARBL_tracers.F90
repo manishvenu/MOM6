@@ -21,7 +21,7 @@ use MOM_interpolate,     only : forcing_timeseries_dataset
 use MOM_interpolate,     only : forcing_timeseries_set_time_type_vars
 use MOM_interpolate,     only : map_model_time_to_forcing_time
 use MOM_io,              only : file_exists, MOM_read_data, slasher, vardesc, var_desc, query_vardesc
-use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type, parse_segment_data_str, parse_segment_manifest_str, fill_obgc_segments
+use MOM_open_boundary,   only : ocean_OBC_type, register_segment_tracer, OBC_segment_type, fill_obgc_segments
 use MOM_remapping,       only : reintegrate_column
 use MOM_remapping,       only : remapping_CS, initialize_remapping, remapping_core_h
 use MOM_restart,         only : query_initialized, MOM_restart_CS, register_restart_field
