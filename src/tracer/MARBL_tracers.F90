@@ -1190,10 +1190,11 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
     end select
   endif
 
-  !TODO: Need to check if there are any OBC segments for MARBL tracers
-  do m=1,CS%ntr
-      call fill_obgc_segments(G, GV, OBC, CS%tracer_data(m)%tr, CS%tracer_data(m)%var_name)
-  enddo
+  if (associated(OBC)) then
+    do m=1,CS%ntr
+        call fill_obgc_segments(G, GV, OBC, CS%tracer_data(m)%tr, CS%tracer_data(m)%var_name)
+    enddo
+  endif
 end subroutine initialize_MARBL_tracers
 
 !> This subroutine is used to register tracer fields and subroutines
