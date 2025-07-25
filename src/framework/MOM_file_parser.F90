@@ -78,7 +78,7 @@ type, public :: param_file_type ; private
   logical  :: log_to_stdout = log_to_stdout_default !< If true, all log
                                     !! messages are also sent to stdout.
   logical  :: log_open = .false.    !< True if the log file has been opened.
-  integer  :: max_line_len = 4      !< The maximum number of characters in the lines
+  integer, public  :: max_line_len = 4      !< The maximum number of characters in the lines
                                     !! in any of the files in this param_file_type after
                                     !! any continued lines have been combined.
   integer  :: stdout                !< The unit number from stdout().

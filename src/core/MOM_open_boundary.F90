@@ -436,7 +436,7 @@ subroutine open_boundary_config(G, US, param_file, OBC)
   integer :: l ! For looping over segments
   logical :: debug, debug_OBC, mask_outside, reentrant_x, reentrant_y
   character(len=15) :: segment_param_str ! The run-time parameter name for each segment
-  character(len=1024) :: segment_str      ! The contents (rhs) for parameter "segment_param_str"
+  character(len=param_file%max_line_len) :: segment_str      ! The contents (rhs) for parameter "segment_param_str"
   character(len=200) :: config1          ! String for OBC_USER_CONFIG
   real               :: Lscale_in, Lscale_out ! parameters controlling tracer values at the boundaries [L ~> m]
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
@@ -444,7 +444,6 @@ subroutine open_boundary_config(G, US, param_file, OBC)
   character(len=64)  :: remappingScheme
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
-
   allocate(OBC)
 
   call get_param(param_file, mdl, "OBC_NUMBER_OF_SEGMENTS", OBC%number_of_segments, &
@@ -720,7 +719,6 @@ subroutine open_boundary_config(G, US, param_file, OBC)
     ! No open boundaries have been requested
     call open_boundary_dealloc(OBC)
   endif
-
 end subroutine open_boundary_config
 
 !> Allocate space for reading OBC data from files. It sets up the required vertical
@@ -733,7 +731,7 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
   type(param_file_type),        intent(in)    :: PF  !< Parameter file handle
 
   integer :: n, m, num_fields, mm
-  character(len=1024) :: segstr
+  character(len=PF%max_line_len) :: segstr
   character(len=256) :: filename
   character(len=20)  :: segnam, suffix
   character(len=32)  :: fieldname
@@ -752,7 +750,6 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
   type(external_tracers_segments_props), pointer :: obgc_segments_props_list =>NULL()
   !will be able to dynamically switch between sub-sampling refined grid data or model grid
   integer :: IO_needs(3) ! Sums to determine global OBC data use and update patterns.
-
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
 
   ! There is a problem with the order of the OBC initialization
@@ -1078,7 +1075,6 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
   OBC%any_needs_IO_for_data = (IO_needs(1) > 0)
   OBC%update_OBC = (IO_needs(2) > 0)
   OBC%some_need_no_IO_for_data = (IO_needs(3) > 0)
-
 end subroutine initialize_segment_data
 
 !> Return an appropriate dimensional scaling factor for input data based on an OBC segment data
@@ -1808,14 +1804,13 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
 
   ! Local variables
   integer :: n,m,num_fields,na, salt_ind
-  character(len=1024) :: segstr
+  character(len=PF%max_line_len) :: segstr
   character(len=256) :: filename
   character(len=20)  :: segnam, suffix
   character(len=32)  :: fieldname
   real               :: value  ! A value that is parsed from the segment data string [various units]
   character(len=32), dimension(MAX_OBC_FIELDS) :: fields  ! segment field names
   type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
-
   do n=1, OBC%number_of_segments
     segment => OBC%segment(n)
     write(segnam,"('OBC_SEGMENT_',i3.3,'_DATA')") n
@@ -1893,7 +1888,6 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
   enddo
 
   return
-
 end subroutine parse_for_tracer_reservoirs
 
 !> Initialize open boundary control structure and do any necessary rescaling of OBC

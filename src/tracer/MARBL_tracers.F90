@@ -859,13 +859,12 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
   integer :: n,m, ntr_id, index, num_fields
   character(len=32), dimension(MAX_OBC_FIELDS) :: fields  ! segment field names
   logical :: does_tracer_file_exist = .False.
-  character(len=1024) :: segstr
+  character(len=param_file%max_line_len) :: segstr
   character(len=256) :: filename
   character(len=32)  :: fieldname
   character(len=20)  :: segnam
   real               :: value 
   if (.NOT. associated(OBC)) return
-
 
   do m=1,CS%ntr
     do n=1, OBC%number_of_segments
@@ -892,7 +891,6 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
                                    OBC_array=does_tracer_file_exist)
     enddo
   enddo
-
 end subroutine register_MARBL_tracer_segments
 !> This subroutine initializes the CS%ntr tracer fields in tr(:,:,:,:)
 !! and it sets up the tracer output.
