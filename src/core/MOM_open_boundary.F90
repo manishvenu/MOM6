@@ -754,7 +754,6 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
 
   if (OBC%n_tide_constituents > 0) num_standard_tracers = num_standard_tracers + 6 ! Uamp, Uphase, Vamp, Vphase, SSHamp, SSHphase
-  print *, 'MRV: NUmber Standard Tracers ', num_standard_tracers
   ! There is a problem with the order of the OBC initialization
   ! with respect to ALE_init. Currently handling this by copying the
   ! param file so that I can use it later in step_MOM in order to finish
@@ -820,6 +819,7 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
     obgc_segments_props_list => OBC%obgc_segments_props !pointer to the head node
     do m=1,segment%num_fields
       if (m <= num_fields) then
+        
         !These are tracers with segments specified in MOM6 style override files
 
 
@@ -827,11 +827,11 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
 
         ! If there any MARBL tracers, set the MARBL tracer genre to OBGC & increment obgc tracers (MARBL takes advantage of obgc functions)
         if (m > num_standard_tracers) then
-            print *, 'MRV: OBC: MARBL tracer ', trim(fields(m)), ' genre set to obgc'
             segment%field(m)%genre = 'obgc'
-            OBC%num_obgc_tracers = OBC%num_obgc_tracers+1 ! For use in tracer reservoir setup
+            ! OBC%num_obgc_tracers = OBC%num_obgc_tracers+1 ! For use in tracer reservoir setup
         endif
       else
+        print *, 'MRV: Field in the obgc section somehow ', trim(fields(m))
         !These are obgc tracers with segments specified by external modules.
         !Set a flag so that these can be distinguished from native tracers as they may need
         !extra steps for preparation and handling.
@@ -1869,7 +1869,7 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
        !This logic assumes all external tarcers need a reservoir
        !The segments for tracers are not initialized yet (that happens later in initialize_segment_data())
        !so we cannot query to determine if this tracer needs a reservoir.
-      print*, 'MRV: parse_for_tracer_Reservoirs: Tracer ', trim(fields(m)), ' at index ', m+na
+       print *, 'MRV: Entered Here tracers ',m+na
        if (segment%is_E_or_W_2) then
         OBC%tracer_x_reservoirs_used(m+na) = .true.
        else

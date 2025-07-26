@@ -855,7 +855,7 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
   ! This include declares and sets the variable "version".
 #   include "version_variable.h"
   character(len=128), parameter :: sub_name = 'register_MARBL_tracer_segments'
-  integer :: n,m, ntr_id
+  integer :: n,m, ntr_id, na
 
   if (.NOT. associated(OBC)) return
 
@@ -863,13 +863,14 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
     do n=1, OBC%number_of_segments
       segment=>OBC%segment(n)
       if (.not. segment%on_pe) cycle
-       
+
       call tracer_name_lookup(tr_Reg, ntr_id, CS%tracer_data(m)%tr_ptr, CS%tracer_data(m)%var_name)
 
       ! Previously, this function read the OBC_SEGMENT_XXX_DATA string again to determine the boolean for OBC_array. Given the 
       ! overhead, this is removed, and simply set to true. We assume that the file will always exist for MARBL tracers. Code for this exists in manishvenu fork commit 6e9b8b270 in branch MARBL_OBC_with_gt_dev
       call register_segment_tracer( CS%tracer_data(m)%tr_ptr, ntr_id, param_file, GV, segment, &
                                    OBC_array=.true.)
+
     enddo
   enddo
 end subroutine register_MARBL_tracer_segments
@@ -1189,6 +1190,7 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
         call MOM_read_data(CS%restoring_I_tau_file, "RTAU", CS%I_tau(:,:,:), G%Domain)
     end select
   endif
+
 
   if (associated(OBC)) then
     do m=1,CS%ntr
