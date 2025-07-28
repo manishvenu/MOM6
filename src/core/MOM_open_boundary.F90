@@ -750,10 +750,10 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
   type(external_tracers_segments_props), pointer :: obgc_segments_props_list =>NULL()
   !will be able to dynamically switch between sub-sampling refined grid data or model grid
   integer :: IO_needs(3) ! Sums to determine global OBC data use and update patterns.
-  integer :: num_standard_tracers = 5 ! U, V, SSH, TEMP, SALT
+  integer :: num_standard_fields = 5 ! U, V, SSH, TEMP, SALT
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
 
-  if (OBC%n_tide_constituents > 0) num_standard_tracers = num_standard_tracers + 6 ! Uamp, Uphase, Vamp, Vphase, SSHamp, SSHphase
+  if (OBC%n_tide_constituents > 0) num_standard_fields = num_standard_fields + 6 ! Uamp, Uphase, Vamp, Vphase, SSHamp, SSHphase
   ! There is a problem with the order of the OBC initialization
   ! with respect to ALE_init. Currently handling this by copying the
   ! param file so that I can use it later in step_MOM in order to finish
@@ -826,9 +826,8 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
         call parse_segment_data_str(trim(segstr), m, trim(fields(m)), value, filename, fieldname)
 
         ! If there any MARBL tracers, set the MARBL tracer genre to OBGC & increment obgc tracers (MARBL takes advantage of obgc functions)
-        if (m > num_standard_tracers) then
+        if (m > num_standard_fields) then
             segment%field(m)%genre = 'obgc'
-            ! OBC%num_obgc_tracers = OBC%num_obgc_tracers+1 ! For use in tracer reservoir setup
         endif
       else
         print *, 'MRV: Field in the obgc section somehow ', trim(fields(m))
@@ -1816,6 +1815,9 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
   real               :: value  ! A value that is parsed from the segment data string [various units]
   character(len=32), dimension(MAX_OBC_FIELDS) :: fields  ! segment field names
   type(OBC_segment_type), pointer :: segment => NULL() ! pointer to segment type list
+  integer :: num_standard_fields = 5 ! U, V, SSH, TEMP, SALT
+
+  if (OBC%n_tide_constituents > 0) num_standard_fields = num_standard_fields + 6 ! Uamp, Uphase, Vamp, Vphase, SSHamp, SSHphase
   do n=1, OBC%number_of_segments
     segment => OBC%segment(n)
     write(segnam,"('OBC_SEGMENT_',i3.3,'_DATA')") n
@@ -1827,7 +1829,7 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
 
     call parse_segment_manifest_str(trim(segstr), num_fields, fields)
     if (num_fields == 0) cycle
-
+    na =2 ! number of native MOM6 tracers (T&S) with reservoirs
     ! At this point, just search for TEMP and SALT as tracers 1 and 2.
     do m=1,num_fields
       call parse_segment_data_str(trim(segstr), m, trim(fields(m)), value, filename, fieldname)
@@ -1844,6 +1846,15 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
             OBC%tracer_x_reservoirs_used(2) = .true.
           else
             OBC%tracer_y_reservoirs_used(2) = .true.
+          endif
+        endif
+
+        if (m > num_standard_fields) then
+          print *, 'MRV: Entered Here tracers ',m-num_standard_fields+na, ' for ',trim(fields(m))
+          if (segment%is_E_or_W_2) then
+            OBC%tracer_x_reservoirs_used(m-num_standard_fields+na) = .true.
+          else
+            OBC%tracer_y_reservoirs_used(m+na) = .true.
           endif
         endif
       endif
