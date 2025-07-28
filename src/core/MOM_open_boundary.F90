@@ -1848,9 +1848,8 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
             OBC%tracer_y_reservoirs_used(2) = .true.
           endif
         endif
-
+        ! FOR MARBL Tracers
         if (m > num_standard_fields) then
-          print *, 'MRV: Entered Here tracers ',m-num_standard_fields+na, ' for ',trim(fields(m))
           if (segment%is_E_or_W_2) then
             OBC%tracer_x_reservoirs_used(m-num_standard_fields+na) = .true.
           else
@@ -1880,7 +1879,6 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
        !This logic assumes all external tarcers need a reservoir
        !The segments for tracers are not initialized yet (that happens later in initialize_segment_data())
        !so we cannot query to determine if this tracer needs a reservoir.
-       print *, 'MRV: Entered Here tracers ',m+na
        if (segment%is_E_or_W_2) then
         OBC%tracer_x_reservoirs_used(m+na) = .true.
        else
