@@ -13,6 +13,9 @@ ADIABATIC = True                !   [Boolean] default = False
                                 ! true. This assumes that KD = KDML = 0.0 and that
                                 ! there is no buoyancy forcing, but makes the model
                                 ! faster by eliminating subroutine calls.
+USE_POROUS_BARRIER = False      !   [Boolean] default = False
+                                ! If true, use porous barrier to constrain the widths and face areas at the
+                                ! edges of the grid cells.
 DT = 8.64E+04                   !   [s]
                                 ! The (baroclinic) dynamics time step.  The time-step that
                                 ! is actually used will be an integer fraction of the
@@ -232,7 +235,7 @@ DIAG_AS_CHKSUM = True
 DEBUG = True
 GRID_ROTATION_ANGLE_BUGS = True !   [Boolean] default = True
 USE_GM_WORK_BUG = True          !   [Boolean] default = True
-FIX_UNSPLIT_DT_VISC_BUG = False !   [Boolean] default = False
 USE_LAND_MASK_FOR_HVISC = False !   [Boolean] default = False
 GUST_CONST = 0.02               !   [Pa] default = 0.02
 FIX_USTAR_GUSTLESS_BUG = False  !   [Boolean] default = False
+

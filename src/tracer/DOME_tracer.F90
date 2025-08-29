@@ -180,7 +180,7 @@ subroutine initialize_DOME_tracer(restart, day, G, GV, US, h, diag, OBC, CS, &
   real :: dz(SZI_(G),SZK_(GV)) ! Height change across layers [Z ~> m]
   real :: tr_y   ! Initial zonally uniform tracer concentrations, perhaps in [g kg-1]
   real :: dz_neglect        ! A thickness that is so small it is usually lost
-                            ! in roundoff and can be neglected [Z ~> m or kg m-2].
+                            ! in roundoff and can be neglected [Z ~> m]
   real :: e(SZK_(GV)+1)     ! Interface heights relative to the sea surface (negative down) [Z ~> m]
   real :: e_top  ! Height of the top of the tracer band relative to the sea surface [Z ~> m]
   real :: e_bot  ! Height of the bottom of the tracer band relative to the sea surface [Z ~> m]
@@ -372,7 +372,7 @@ subroutine DOME_tracer_surface_state(sfc_state, h, G, GV, CS)
       !   This call loads the surface values into the appropriate array in the
       ! coupler-type structure.
       call set_coupler_type_data(CS%tr(:,:,1,m), CS%ind_tr(m), sfc_state%tr_fields, &
-                   idim=(/isd, is, ie, ied/), jdim=(/jsd, js, je, jed/) )
+                   idim=(/isd, is, ie, ied/), jdim=(/jsd, js, je, jed/), turns=G%HI%turns)
     enddo
   endif
 

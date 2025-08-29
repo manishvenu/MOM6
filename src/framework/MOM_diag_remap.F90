@@ -92,6 +92,7 @@ type :: diag_remap_ctrl
                                       !! vertical extents in [Z ~> m] for remapping extensive variables
   integer :: interface_axes_id = 0 !< Vertical axes id for remapping at interfaces
   integer :: layer_axes_id = 0 !< Vertical axes id for remapping on layers
+  logical :: om4_remap_via_sub_cells !< Use the OM4-era ramap_via_sub_cells
   integer :: answer_date      !< The vintage of the order of arithmetic and expressions
                               !! to use for remapping.  Values below 20190101 recover
                               !! the answers from 2018, while higher values use more
@@ -102,10 +103,11 @@ end type diag_remap_ctrl
 contains
 
 !> Initialize a diagnostic remapping type with the given vertical coordinate.
-subroutine diag_remap_init(remap_cs, coord_tuple, answer_date, GV)
+subroutine diag_remap_init(remap_cs, coord_tuple, om4_remap_via_sub_cells, answer_date, GV)
   type(diag_remap_ctrl), intent(inout) :: remap_cs    !< Diag remapping control structure
   character(len=*),      intent(in)    :: coord_tuple !< A string in form of
                                                       !! MODULE_SUFFIX PARAMETER_SUFFIX COORDINATE_NAME
+  logical,               intent(in)    :: om4_remap_via_sub_cells !< Use the OM4-era ramap_via_sub_cells
   integer,               intent(in)    :: answer_date !< The vintage of the order of arithmetic and expressions
                                                       !! to use for remapping.  Values below 20190101 recover
                                                       !! the answers from 2018, while higher values use more
@@ -127,6 +129,7 @@ subroutine diag_remap_init(remap_cs, coord_tuple, answer_date, GV)
   remap_cs%configured = .false.
   remap_cs%initialized = .false.
   remap_cs%used = .false.
+  remap_cs%om4_remap_via_sub_cells = om4_remap_via_sub_cells
   remap_cs%answer_date = answer_date
   remap_cs%nz = 0
 
@@ -309,7 +312,9 @@ subroutine diag_remap_update(remap_cs, G, GV, US, h, T, S, eqn_of_state, h_targe
   if (.not. remap_cs%initialized) then
     ! Initialize remapping and regridding on the first call
     call initialize_remapping(remap_cs%remap_cs, 'PPM_IH4', boundary_extrapolation=.false., &
-                              answer_date=remap_cs%answer_date)
+                              om4_remap_via_sub_cells=remap_cs%om4_remap_via_sub_cells, &
+                              answer_date=remap_cs%answer_date, &
+                              h_neglect=h_neglect, h_neglect_edge=h_neglect_edge)
     remap_cs%initialized = .true.
   endif
 
@@ -428,15 +433,8 @@ subroutine do_remap(remap_cs, G, GV, US, isdf, jsdf, h, staggered_in_x, staggere
   ! Local variables
   real, dimension(remap_cs%nz) :: h_dest ! Destination thicknesses [H ~> m or kg m-2] or [Z ~> m]
   real, dimension(size(h,3)) :: h_src    ! A column of source thicknesses [H ~> m or kg m-2] or [Z ~> m]
-  real :: h_neglect, h_neglect_edge ! Negligible thicknesses [H ~> m or kg m-2] or [Z ~> m]
   integer :: nz_src, nz_dest        ! The number of layers on the native and remapped grids
   integer :: i, j                   ! Grid index
-
-  if (remap_cs%Z_based_coord) then
-    h_neglect = set_dz_neglect(GV, US, remap_cs%answer_date, h_neglect_edge)
-  else
-    h_neglect = set_h_neglect(GV, remap_cs%answer_date, h_neglect_edge)
-  endif
 
   nz_src = size(field,3)
   nz_dest = remap_cs%nz
@@ -449,14 +447,14 @@ subroutine do_remap(remap_cs, G, GV, US, isdf, jsdf, h, staggered_in_x, staggere
         h_src(:) = 0.5 * (h(i,j,:) + h(i+1,j,:))
         h_dest(:) = 0.5 * (remap_cs%h(i,j,:) + remap_cs%h(i+1,j,:))
         call remapping_core_h(remap_cs%remap_cs, nz_src, h_src(:), field(I,j,:), &
-                              nz_dest, h_dest(:), remapped_field(I,j,:), h_neglect, h_neglect_edge)
+                              nz_dest, h_dest(:), remapped_field(I,j,:))
       endif ; enddo ; enddo
     else
       do j=G%jsc,G%jec ; do I=G%IscB,G%IecB
         h_src(:) = 0.5 * (h(i,j,:) + h(i+1,j,:))
         h_dest(:) = 0.5 * (remap_cs%h(i,j,:) + remap_cs%h(i+1,j,:))
         call remapping_core_h(remap_cs%remap_cs, nz_src, h_src(:), field(I,j,:), &
-                              nz_dest, h_dest(:), remapped_field(I,j,:), h_neglect, h_neglect_edge)
+                              nz_dest, h_dest(:), remapped_field(I,j,:))
       enddo ; enddo
     endif
   elseif (staggered_in_y .and. .not. staggered_in_x) then
@@ -466,14 +464,14 @@ subroutine do_remap(remap_cs, G, GV, US, isdf, jsdf, h, staggered_in_x, staggere
         h_src(:) = 0.5 * (h(i,j,:) + h(i,j+1,:))
         h_dest(:) = 0.5 * (remap_cs%h(i,j,:) + remap_cs%h(i,j+1,:))
         call remapping_core_h(remap_cs%remap_cs, nz_src, h_src(:), field(i,J,:), &
-                              nz_dest, h_dest(:), remapped_field(i,J,:), h_neglect, h_neglect_edge)
+                              nz_dest, h_dest(:), remapped_field(i,J,:))
       endif ; enddo ; enddo
     else
       do J=G%jscB,G%jecB ; do i=G%isc,G%iec
         h_src(:) = 0.5 * (h(i,j,:) + h(i,j+1,:))
         h_dest(:) = 0.5 * (remap_cs%h(i,j,:) + remap_cs%h(i,j+1,:))
         call remapping_core_h(remap_cs%remap_cs, nz_src, h_src(:), field(i,J,:), &
-                              nz_dest, h_dest(:), remapped_field(i,J,:), h_neglect, h_neglect_edge)
+                              nz_dest, h_dest(:), remapped_field(i,J,:))
       enddo ; enddo
     endif
   elseif ((.not. staggered_in_x) .and. (.not. staggered_in_y)) then
@@ -481,14 +479,12 @@ subroutine do_remap(remap_cs, G, GV, US, isdf, jsdf, h, staggered_in_x, staggere
     if (present(mask)) then
       do j=G%jsc,G%jec ; do i=G%isc,G%iec ; if (mask(i,j) > 0.) then
         call remapping_core_h(remap_cs%remap_cs, nz_src, h(i,j,:), field(i,j,:), &
-                              nz_dest, remap_cs%h(i,j,:), remapped_field(i,j,:), &
-                              h_neglect, h_neglect_edge)
+                              nz_dest, remap_cs%h(i,j,:), remapped_field(i,j,:))
       endif ; enddo ; enddo
     else
       do j=G%jsc,G%jec ; do i=G%isc,G%iec
         call remapping_core_h(remap_cs%remap_cs, nz_src, h(i,j,:), field(i,j,:), &
-                              nz_dest, remap_cs%h(i,j,:), remapped_field(i,j,:), &
-                              h_neglect, h_neglect_edge)
+                              nz_dest, remap_cs%h(i,j,:), remapped_field(i,j,:))
       enddo ; enddo
     endif
   else
@@ -824,9 +820,11 @@ subroutine horizontally_average_field(G, GV, isdf, jsdf, h, staggered_in_x, stag
   logical, dimension(:),   intent(out) :: averaged_mask  !< Mask for horizontally averaged field [nondim]
 
   ! Local variables
-  real :: volume(G%isc:G%iec, G%jsc:G%jec, size(field,3)) ! The area [m2], volume [m3] or mass [kg] of each cell.
+  real :: volume(G%isc:G%iec, G%jsc:G%jec, size(field,3)) ! The area [L2 ~> m2], volume [L2 m ~> m3]
+                                             ! or mass [L2 kg m-2 ~> kg] of each cell.
   real :: stuff(G%isc:G%iec, G%jsc:G%jec, size(field,3))  ! The area, volume or mass-weighted integral of the
-                                             ! field being averaged in each cell, in [m2 A], [m3 A] or [kg A],
+                                             ! field being averaged in each cell, in [L2 a ~> m2 A],
+                                             ! [L2 m a ~> m3 A] or [L2 kg m-2 A ~> kg A],
                                              ! depending on the weighting for the averages and whether the
                                              ! model makes the Boussinesq approximation.
   real, dimension(size(field, 3)) :: vol_sum   ! The global sum of the areas [m2], volumes [m3] or mass [kg]
@@ -851,14 +849,13 @@ subroutine horizontally_average_field(G, GV, isdf, jsdf, h, staggered_in_x, stag
         stuff_sum(k) = 0.
         if (is_extensive) then
           do j=G%jsc, G%jec ; do I=G%isc, G%iec
-            volume(I,j,k) = (G%US%L_to_m**2 * G%areaCu(I,j)) * G%mask2dCu(I,j)
+            volume(I,j,k) = G%areaCu(I,j) * G%mask2dCu(I,j)
             stuff(I,j,k) = volume(I,j,k) * field(I,j,k)
           enddo ; enddo
         else ! Intensive
           do j=G%jsc, G%jec ; do I=G%isc, G%iec
             height = 0.5 * (h(i,j,k) + h(i+1,j,k))
-            volume(I,j,k) = (G%US%L_to_m**2 * G%areaCu(I,j)) &
-                * (GV%H_to_MKS * height) * G%mask2dCu(I,j)
+            volume(I,j,k) = G%areaCu(I,j)  * (GV%H_to_MKS * height) * G%mask2dCu(I,j)
             stuff(I,j,k) = volume(I,j,k) * field(I,j,k)
           enddo ; enddo
         endif
@@ -866,7 +863,7 @@ subroutine horizontally_average_field(G, GV, isdf, jsdf, h, staggered_in_x, stag
     else ! Interface
       do k=1,nz
         do j=G%jsc, G%jec ; do I=G%isc, G%iec
-          volume(I,j,k) = (G%US%L_to_m**2 * G%areaCu(I,j)) * G%mask2dCu(I,j)
+          volume(I,j,k) = G%areaCu(I,j) * G%mask2dCu(I,j)
           stuff(I,j,k) = volume(I,j,k) * field(I,j,k)
         enddo ; enddo
       enddo
@@ -877,14 +874,13 @@ subroutine horizontally_average_field(G, GV, isdf, jsdf, h, staggered_in_x, stag
       do k=1,nz
         if (is_extensive) then
           do J=G%jsc, G%jec ; do i=G%isc, G%iec
-            volume(i,J,k) = (G%US%L_to_m**2 * G%areaCv(i,J)) * G%mask2dCv(i,J)
+            volume(i,J,k) = G%areaCv(i,J) * G%mask2dCv(i,J)
             stuff(i,J,k) = volume(i,J,k) * field(i,J,k)
           enddo ; enddo
         else ! Intensive
           do J=G%jsc, G%jec ; do i=G%isc, G%iec
             height = 0.5 * (h(i,j,k) + h(i,j+1,k))
-            volume(i,J,k) = (G%US%L_to_m**2 * G%areaCv(i,J)) &
-                * (GV%H_to_MKS * height) * G%mask2dCv(i,J)
+            volume(i,J,k) = G%areaCv(i,J) * (GV%H_to_MKS * height) * G%mask2dCv(i,J)
             stuff(i,J,k) = volume(i,J,k) * field(i,J,k)
           enddo ; enddo
         endif
@@ -892,7 +888,7 @@ subroutine horizontally_average_field(G, GV, isdf, jsdf, h, staggered_in_x, stag
     else ! Interface
       do k=1,nz
         do J=G%jsc, G%jec ; do i=G%isc, G%iec
-          volume(i,J,k) = (G%US%L_to_m**2 * G%areaCv(i,J)) * G%mask2dCv(i,J)
+          volume(i,J,k) = G%areaCv(i,J) * G%mask2dCv(i,J)
           stuff(i,J,k) = volume(i,J,k) * field(i,J,k)
         enddo ; enddo
       enddo
@@ -904,7 +900,7 @@ subroutine horizontally_average_field(G, GV, isdf, jsdf, h, staggered_in_x, stag
         if (is_extensive) then
           do j=G%jsc, G%jec ; do i=G%isc, G%iec
             if (h(i,j,k) > 0.) then
-              volume(i,j,k) = (G%US%L_to_m**2 * G%areaT(i,j)) * G%mask2dT(i,j)
+              volume(i,j,k) = G%areaT(i,j) * G%mask2dT(i,j)
               stuff(i,j,k) = volume(i,j,k) * field(i,j,k)
             else
               volume(i,j,k) = 0.
@@ -913,8 +909,7 @@ subroutine horizontally_average_field(G, GV, isdf, jsdf, h, staggered_in_x, stag
           enddo ; enddo
         else ! Intensive
           do j=G%jsc, G%jec ; do i=G%isc, G%iec
-            volume(i,j,k) = (G%US%L_to_m**2 * G%areaT(i,j)) &
-                * (GV%H_to_MKS * h(i,j,k)) * G%mask2dT(i,j)
+            volume(i,j,k) = G%areaT(i,j) * (GV%H_to_MKS * h(i,j,k)) * G%mask2dT(i,j)
             stuff(i,j,k) = volume(i,j,k) * field(i,j,k)
           enddo ; enddo
         endif
@@ -922,7 +917,7 @@ subroutine horizontally_average_field(G, GV, isdf, jsdf, h, staggered_in_x, stag
     else ! Interface
       do k=1,nz
         do j=G%jsc, G%jec ; do i=G%isc, G%iec
-          volume(i,j,k) = (G%US%L_to_m**2 * G%areaT(i,j)) * G%mask2dT(i,j)
+          volume(i,j,k) = G%areaT(i,j) * G%mask2dT(i,j)
           stuff(i,j,k) = volume(i,j,k) * field(i,j,k)
         enddo ; enddo
       enddo
@@ -934,8 +929,8 @@ subroutine horizontally_average_field(G, GV, isdf, jsdf, h, staggered_in_x, stag
   ! Packing the sums into a single array with a single call to sum across PEs saves reduces
   ! the costs of communication.
   do k=1,nz
-    sums_EFP(2*k-1) = reproducing_sum_EFP(volume(:,:,k), only_on_PE=.true.)
-    sums_EFP(2*k)   = reproducing_sum_EFP(stuff(:,:,k), only_on_PE=.true.)
+    sums_EFP(2*k-1) = reproducing_sum_EFP(volume(:,:,k), only_on_PE=.true., unscale=G%US%L_to_m**2)
+    sums_EFP(2*k)   = reproducing_sum_EFP(stuff(:,:,k), only_on_PE=.true., unscale=G%US%L_to_m**2)
   enddo
   call EFP_sum_across_PEs(sums_EFP, 2*nz)
   do k=1,nz

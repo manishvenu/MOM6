@@ -65,7 +65,10 @@
 SHELL = bash
 
 # No implicit rules, suffixes, or variables
-MAKEFLAGS += -rR
+MAKEFLAGS += --no-builtin-rules
+MAKEFLAGS += --no-builtin-variables
+
+.SUFFIXES:
 
 # Determine the MOM6 autoconf srcdir
 AC_SRCDIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))../ac
@@ -74,7 +77,7 @@ AC_SRCDIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))../ac
 -include config.mk
 
 # Set the FMS library
-FMS_COMMIT ?= 2023.03
+FMS_COMMIT ?= 2025.02.01
 FMS_URL ?= https://github.com/NOAA-GFDL/FMS.git
 export FMS_COMMIT
 export FMS_URL
@@ -83,19 +86,21 @@ export FMS_URL
 # TODO: This needs more automated configuration
 MPIRUN ?= mpirun
 
-# Generic compiler variables are pass through to the builds
+# Generic compiler variables are passed through to the builds
 export CC
 export MPICC
 export FC
 export MPIFC
 
 # Builds are distinguished by FCFLAGS
-FCFLAGS_DEBUG ?= -g -O0
+FCFLAGS ?= -g -O0
+
+FCFLAGS_DEBUG ?= $(FCFLAGS)
 FCFLAGS_REPRO ?= -g -O2
 FCFLAGS_OPT ?= -g -O3 -mavx -fno-omit-frame-pointer
 FCFLAGS_INIT ?=
 FCFLAGS_COVERAGE ?= -g -O0 -fbacktrace --coverage
-FCFLAGS_FMS ?= $(FCFLAGS_DEBUG)
+FCFLAGS_FMS ?= $(FCFLAGS)
 # Additional notes:
 # - These default values are simple, minimalist flags, supported by nearly all
 #   compilers, and are somewhat analogous to GFDL's DEBUG and REPRO builds.
@@ -208,10 +213,8 @@ endif
 
 ## Rules
 
-.PHONY: all build.regressions build.prof
+.PHONY: all
 all: $(foreach b,$(EXECS),$(BUILD)/$(b))
-build.regressions: $(foreach b,symmetric target,$(BUILD)/$(b)/MOM6)
-build.prof: $(foreach b,opt opt_target,$(BUILD)/$(b)/MOM6)
 
 # Executable
 .PRECIOUS: $(foreach b,$(EXECS),$(BUILD)/$(b))
@@ -220,14 +223,12 @@ build.prof: $(foreach b,opt opt_target,$(BUILD)/$(b)/MOM6)
 # Compiler flags
 
 # .testing dependencies
-# TODO: We should probably build TARGET with the FMS that it was configured
-#   to use.  But for now we use the same FMS over all builds.
 FCFLAGS_DEPS = -I$(abspath $(DEPS)/include)
 LDFLAGS_DEPS = -L$(abspath $(DEPS)/lib)
 PATH_DEPS = PATH="${PATH}:$(abspath $(DEPS)/bin)"
 
 
-# Define the build targets in terms of the traditional DEBUG/REPRO/etc labels
+# Compiler flags
 SYMMETRIC_FCFLAGS := FCFLAGS="$(FCFLAGS_DEBUG) $(FCFLAGS_INIT) $(FCFLAGS_DEPS)"
 ASYMMETRIC_FCFLAGS := FCFLAGS="$(FCFLAGS_DEBUG) $(FCFLAGS_INIT) $(FCFLAGS_DEPS)"
 REPRO_FCFLAGS := FCFLAGS="$(FCFLAGS_REPRO) $(FCFLAGS_DEPS)"
@@ -236,9 +237,9 @@ OPENMP_FCFLAGS := FCFLAGS="$(FCFLAGS_DEBUG) $(FCFLAGS_INIT) $(FCFLAGS_DEPS)"
 TARGET_FCFLAGS := FCFLAGS="$(FCFLAGS_DEBUG) $(FCFLAGS_INIT) $(FCFLAGS_DEPS)"
 COV_FCFLAGS := FCFLAGS="$(FCFLAGS_COVERAGE) $(FCFLAGS_DEPS)"
 
+# Linker flags
 MOM_LDFLAGS := LDFLAGS="$(LDFLAGS_DEPS) $(LDFLAGS_USER)"
 COV_LDFLAGS := LDFLAGS="$(LDFLAGS_COVERAGE) $(LDFLAGS_DEPS) $(LDFLAGS_USER)"
-
 
 # Environment variable configuration
 MOM_ENV := $(PATH_FMS)
@@ -265,25 +266,37 @@ $(BUILD)/timing/Makefile: MOM_ACFLAGS += --with-driver=timing_tests
 
 
 # Build executables
+.NOTPARALLEL:$(foreach e,$(UNIT_EXECS),$(BUILD)/unit/$(e))
 $(BUILD)/unit/test_%: $(BUILD)/unit/Makefile FORCE
-	cd $(@D) && $(TIME) $(MAKE) $(@F) -j
-$(BUILD)/unit/Makefile: $(foreach e,$(UNIT_EXECS),../config_src/drivers/unit_tests/$(e).F90)
+	cd $(@D) && $(TIME) $(MAKE) $(@F)
 
+$(BUILD)/unit/Makefile: \
+  $(foreach e,$(UNIT_EXECS),../config_src/drivers/unit_tests/$(e).F90)
+
+.NOTPARALLEL:$(foreach e,$(TIMING_EXECS),$(BUILD)/timing/$(e))
 $(BUILD)/timing/time_%: $(BUILD)/timing/Makefile FORCE
-	cd $(@D) && $(TIME) $(MAKE) $(@F) -j
-$(BUILD)/timing/Makefile: $(foreach e,$(TIMING_EXECS),../config_src/drivers/timing_tests/$(e).F90)
+	cd $(@D) && $(TIME) $(MAKE) $(@F)
+
+$(BUILD)/timing/Makefile: \
+  $(foreach e,$(TIMING_EXECS),../config_src/drivers/timing_tests/$(e).F90)
 
 $(BUILD)/%/MOM6: $(BUILD)/%/Makefile FORCE
-	cd $(@D) && $(TIME) $(MAKE) $(@F) -j
+	cd $(@D) && $(TIME) $(MAKE) $(@F)
 
 # Target codebase should use its own build system
 $(BUILD)/target/MOM6: $(BUILD)/target FORCE | $(TARGET_CODEBASE)
-	$(MAKE) -C $(TARGET_CODEBASE)/.testing build/symmetric/MOM6
+	$(MAKE) -C $(TARGET_CODEBASE)/.testing BUILD=build build/symmetric/MOM6
 
 $(BUILD)/target: | $(TARGET_CODEBASE)
 	ln -s $(abspath $(TARGET_CODEBASE))/.testing/build/symmetric $@
 
-FORCE:
+$(BUILD)/opt_target/MOM6: $(BUILD)/opt_target FORCE | $(TARGET_CODEBASE)
+	$(MAKE) -C $(TARGET_CODEBASE)/.testing BUILD=build build/opt/MOM6
+
+$(BUILD)/opt_target: | $(TARGET_CODEBASE)
+	ln -s $(abspath $(TARGET_CODEBASE))/.testing/build/opt $@
+
+.PHONY: FORCE
 
 
 ## Use autoconf to construct the Makefile for each target
@@ -319,10 +332,12 @@ ALL_EXECS = symmetric asymmetric repro openmp opt opt_target coupled nuopc \
 $(foreach b,$(ALL_EXECS),$(BUILD)/$(b)/):
 	mkdir -p $@
 
+ifdef DO_REGRESSION_TESTS
 # Fetch the regression target codebase
 $(TARGET_CODEBASE):
 	git clone --recursive $(MOM_TARGET_URL) $@
 	cd $@ && git checkout --recurse-submodules $(MOM_TARGET_BRANCH)
+endif
 
 
 ## FMS
@@ -350,6 +365,7 @@ $(DEPS)/m4: ../ac/deps/m4 | $(DEPS)
 
 $(DEPS):
 	mkdir -p $(DEPS)
+
 
 #---
 # Verify that the coupled model drivers can be compiled.  This does not verify
@@ -492,14 +508,10 @@ $(foreach c,$(CONFIGS),$(eval $(call CONFIG_DIM_RULE,$(c))))
 # Regression testing only checks for changes in existing diagnostics
 .PRECIOUS: $(WORK)/%/target/chksum_diag
 %.regression.diag: $(foreach b,symmetric target,$(WORK)/%/$(b)/chksum_diag)
-	@! diff $^ | grep "^[<>]" | grep "^>" > /dev/null \
-	  || ! (\
-	    mkdir -p $(WORK)/results/$*; \
-	    (diff $^ | tee $(WORK)/results/$*/chksum_diag.regression.diff | head -n 20) ; \
+	@tools/diff_diag.sh $^ || ! (\
 	    echo -e "$(FAIL): Diagnostics $*.regression.diag have changed." \
 	  )
-	@cmp $^ || ( \
-	  diff $^ | head -n 20; \
+	@tools/cmp_diag.sh $^ || ( \
 	  echo -e "$(WARN): New diagnostics in $<" \
 	)
 	@echo -e "$(PASS): Diagnostics $*.regression.diag agree."
@@ -543,8 +555,8 @@ $(WORK)/%/$(1)/ocean.stats $(WORK)/%/$(1)/chksum_diag: $(BUILD)/$(2)/MOM6 | prep
 	  && $(TIME) $(5) $(MPIRUN) -n $(6) $$(abspath $$<) 2> std.err > std.out \
 	  || !( \
 	    mkdir -p ../../../results/$$*/ ; \
-	    cat std.out | tee ../../../results/$$*/std.$(1).out | tail -n 40 ; \
-	    cat std.err | tee ../../../results/$$*/std.$(1).err | tail -n 40 ; \
+	    cat std.out | tee ../../../results/$$*/std.$(1).out | tail -n 100 ; \
+	    cat std.err | tee ../../../results/$$*/std.$(1).err | tail -n 100 ; \
 	    rm ocean.stats chksum_diag ; \
 	    echo -e "$(FAIL): $$*.$(1) failed at runtime." \
 	  )
@@ -601,7 +613,6 @@ $(eval $(call STAT_RULE,dim.h,symmetric,,H_RESCALE_POWER=11,,1))
 $(eval $(call STAT_RULE,dim.z,symmetric,,Z_RESCALE_POWER=11,,1))
 $(eval $(call STAT_RULE,dim.q,symmetric,,Q_RESCALE_POWER=11,,1))
 $(eval $(call STAT_RULE,dim.r,symmetric,,R_RESCALE_POWER=11,,1))
-
 $(eval $(call STAT_RULE,cov,cov,true,,,1))
 
 # Generate the half-period input namelist as follows:
@@ -627,8 +638,8 @@ $(WORK)/%/restart/ocean.stats: $(BUILD)/symmetric/MOM6 | preproc
 	# Run the first half-period
 	cd $(@D) && $(TIME) $(MPIRUN) -n 1 $(abspath $<) 2> std1.err > std1.out \
 	  || !( \
-	    cat std1.out | tee ../../../results/$*/std.restart1.out | tail -n 40 ; \
-	    cat std1.err | tee ../../../results/$*/std.restart1.err | tail -n 40 ; \
+	    cat std1.out | tee ../../../results/$*/std.restart1.out | tail -n 100 ; \
+	    cat std1.err | tee ../../../results/$*/std.restart1.err | tail -n 100 ; \
 	    echo -e "$(FAIL): $*.restart failed at runtime." \
 	  )
 	# Setup the next inputs
@@ -638,8 +649,8 @@ $(WORK)/%/restart/ocean.stats: $(BUILD)/symmetric/MOM6 | preproc
 	# Run the second half-period
 	cd $(@D) && $(TIME) $(MPIRUN) -n 1 $(abspath $<) 2> std2.err > std2.out \
 	  || !( \
-	    cat std2.out | tee ../../../results/$*/std.restart2.out | tail -n 40 ; \
-	    cat std2.err | tee ../../../results/$*/std.restart2.err | tail -n 40 ; \
+	    cat std2.out | tee ../../../results/$*/std.restart2.out | tail -n 100 ; \
+	    cat std2.err | tee ../../../results/$*/std.restart2.err | tail -n 100 ; \
 	    echo -e "$(FAIL): $*.restart failed at runtime." \
 	  )
 
@@ -649,7 +660,7 @@ $(WORK)/%/restart/ocean.stats: $(BUILD)/symmetric/MOM6 | preproc
 # Not a true rule; only call this after `make test` to summarize test results.
 .PHONY: test.summary
 test.summary:
-	@./tools/report_test_results.sh $(WORK)/results
+	./tools/report_test_results.sh $(WORK)/results
 
 
 #---
@@ -657,36 +668,53 @@ test.summary:
 
 # NOTE: Using file parser gcov report as a proxy for test completion
 .PHONY: run.cov.unit
-run.cov.unit: $(BUILD)/unit/MOM_file_parser_tests.F90.gcov
+run.cov.unit: $(foreach t,$(UNIT_EXECS),$(BUILD)/unit/$(t).F90.gcov)
 
 .PHONY: build.unit
+.NOTPARALLEL: build.unit
 build.unit: $(foreach f, $(UNIT_EXECS), $(BUILD)/unit/$(f))
+
 .PHONY: run.unit
 run.unit: $(foreach f, $(UNIT_EXECS), work/unit/$(f).out)
+
 .PHONY: build.timing
+.NOTPARALLEL: build.timing
 build.timing: $(foreach f, $(TIMING_EXECS), $(BUILD)/timing/$(f))
+
 .PHONY: run.timing
 run.timing: $(foreach f, $(TIMING_EXECS), work/timing/$(f).out)
+
 .PHONY: show.timing
 show.timing: $(foreach f, $(TIMING_EXECS), work/timing/$(f).show)
+
 $(WORK)/timing/%.show:
 	./tools/disp_timing.py $(@:.show=.out)
 
 
-# Invoke the above unit/timing rules for a "target" code
-# Invoke with appropriate macros defines, i.e.
-#   make build.timing_target MOM_TARGET_URL=... MOM_TARGET_BRANCH=... TARGET_CODEBASE=$(BUILD)/target_codebase
-#   make run.timing_target TARGET_CODEBASE=$(BUILD)/target_codebase
+# Invoke the above unit/timing rules for a "target" code, e.g.
+#   make \
+#     MOM_TARGET_URL=... \
+#     MOM_TARGET_BRANCH=... \
+#     TARGET_CODEBASE=$(BUILD)/target_codebase \
+#     build.timing_target
+#   make TARGET_CODEBASE=$(BUILD)/target_codebase run.timing_target
 
-TIMING_TARGET_EXECS ?= $(basename $(notdir $(wildcard $(TARGET_CODEBASE)/config_src/drivers/timing_tests/*.F90) ) )
+TIMING_TARGET_EXECS ?= \
+  $(basename $(notdir $(wildcard $(TARGET_CODEBASE)/config_src/drivers/timing_tests/*.F90)))
 
 .PHONY: build.timing_target
-build.timing_target: $(foreach f, $(TIMING_TARGET_EXECS), $(TARGET_CODEBASE)/.testing/$(BUILD)/timing/$(f))
+build.timing_target: \
+  $(foreach f, $(TIMING_TARGET_EXECS), $(TARGET_CODEBASE)/.testing/$(BUILD)/timing/$(f))
+
 .PHONY: run.timing_target
-run.timing_target: $(foreach f, $(TIMING_TARGET_EXECS), $(TARGET_CODEBASE)/.testing/work/timing/$(f).out)
+run.timing_target: \
+  $(foreach f, $(TIMING_TARGET_EXECS), $(TARGET_CODEBASE)/.testing/work/timing/$(f).out)
+
 .PHONY: compare.timing
-compare.timing: $(foreach f, $(filter $(TIMING_EXECS),$(TIMING_TARGET_EXECS)), work/timing/$(f).compare)
-$(WORK)/timing/%.compare: $(TARGET_CODEBASE)
+compare.timing: \
+  $(foreach f, $(filter $(TIMING_EXECS),$(TIMING_TARGET_EXECS)), work/timing/$(f).compare)
+$(WORK)/timing/%.compare: \
+  $(TARGET_CODEBASE)
 	./tools/disp_timing.py -r $(TARGET_CODEBASE)/.testing/$(@:.compare=.out) $(@:.compare=.out)
 $(TARGET_CODEBASE)/.testing/%: | $(TARGET_CODEBASE)
 	cd $(TARGET_CODEBASE)/.testing && make $*
@@ -698,6 +726,7 @@ $(WORK)/unit/%.out: $(BUILD)/unit/%
 	@mkdir -p $(@D)
 	cd $(@D) ; $(TIME) $(MPIRUN) -n 1 $(abspath $<) 2> >(tee $*.err) > $*.out
 
+# The file parser uses a separate rule to support two-core tests.
 $(WORK)/unit/test_MOM_file_parser.out: $(BUILD)/unit/test_MOM_file_parser
 	if [ $(REPORT_COVERAGE) ]; then \
 	  find $(BUILD)/unit -name *.gcda -exec rm -f '{}' \; ; \
@@ -717,15 +746,13 @@ $(WORK)/unit/test_MOM_file_parser.out: $(BUILD)/unit/test_MOM_file_parser
 	    cat p2.test_MOM_file_parser.err | tail -n 100 ; \
 	  )
 
-# NOTE: .gcov actually depends on .gcda, but .gcda is produced with std.out
-# TODO: Replace $(WORK)/unit/std.out with *.gcda?
-$(BUILD)/unit/MOM_file_parser_tests.F90.gcov: $(WORK)/unit/test_MOM_file_parser.out
+$(BUILD)/unit/test_%.F90.gcov: $(WORK)/unit/test_%.out
 	cd $(@D) \
 	  && gcov -b *.gcda > gcov.unit.out
 	find $(@D) -name "*.gcov" -exec sed -i -r 's/^( *[0-9]*)\*:/ \1:/g' {} \;
 
 .PHONY: report.cov.unit
-report.cov.unit: $(BUILD)/unit/MOM_file_parser_tests.F90.gcov codecov
+report.cov.unit: $(foreach t,$(UNIT_EXECS),$(BUILD)/unit/$(t).F90.gcov) codecov
 	./codecov $(CODECOV_TOKEN_ARG) -R $(BUILD)/unit -f "*.gcov" -Z -n "Unit tests" \
 	    > $(BUILD)/unit/codecov.out \
 	    2> $(BUILD)/unit/codecov.err \

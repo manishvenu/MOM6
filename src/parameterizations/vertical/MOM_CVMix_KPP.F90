@@ -114,7 +114,7 @@ type, public :: KPP_CS ; private
   logical :: LT_K_Enhancement          !< Flags if enhancing mixing coefficients due to LT
   integer :: LT_K_Shape                !< Integer for constant or shape function enhancement
   integer :: LT_K_Method               !< Integer for mixing coefficients LT method
-  real    :: KPP_CVt2                  !< Parameter for Stokes MOST convection entrainment
+  real    :: KPP_CVt2                  !< Parameter for Stokes MOST convection entrainment [nondim]
   real    :: KPP_K_ENH_FAC             !< Factor to multiply by K if Method is CONSTANT [nondim]
   logical :: LT_Vt2_Enhancement        !< Flags if enhancing Vt2 due to LT
   integer :: LT_VT2_METHOD             !< Integer for Vt2 LT method
@@ -156,9 +156,9 @@ type, public :: KPP_CS ; private
 
   ! Diagnostics arrays
   real, pointer,     dimension(:,:)   :: OBLdepth  !< Depth (positive) of ocean boundary layer (OBL) [Z ~> m]
-  real, allocatable, dimension(:,:)   :: OBLdepth_original  !< Depth (positive) of OBL [Z ~> m] without smoothing
-  real, allocatable, dimension(:,:)   :: StokesParXI !< Stokes similarity parameter
-  real, allocatable, dimension(:,:)   :: Lam2        !< La^(-2) = Ustk0/u*
+  real, allocatable, dimension(:,:)   :: OBLdepth_original  !< Depth (positive) of OBL without smoothing [Z ~> m]
+  real, allocatable, dimension(:,:)   :: StokesParXI !< Stokes similarity parameter [nondim]
+  real, allocatable, dimension(:,:)   :: Lam2      !< La^(-2) = Ustk0/u* [nondim]
   real, allocatable, dimension(:,:)   :: kOBL      !< Level (+fraction) of OBL extent [nondim]
   real, allocatable, dimension(:,:)   :: OBLdepthprev !< previous Depth (positive) of OBL [Z ~> m]
   real, allocatable, dimension(:,:)   :: La_SL     !< Langmuir number used in KPP [nondim]
@@ -523,7 +523,7 @@ logical function KPP_init(paramFile, G, GV, US, diag, Time, CS, passive)
                  "The vintage of the order of arithmetic in the CVMix KPP calculations.  Values "//&
                  "below 20240501 recover the answers from early in 2024, while higher values "//&
                  "use expressions that have been refactored for rotational symmetry.", &
-                 default=20240101) !### Change to: default=default_answer_date)
+                 default=default_answer_date)
 
   call closeParameterBlock(paramFile)
 
@@ -712,11 +712,11 @@ subroutine KPP_calculate(CS, G, GV, US, h, tv, uStar, buoyFlux, Kt, Ks, Kv, &
       "KPP_calculate: The Waves control structure must be associated if STOKES_MIXING is True.")
 
   if (CS%debug) then
-    call hchksum(h, "KPP in: h",G%HI,haloshift=0, scale=GV%H_to_m)
-    call hchksum(uStar, "KPP in: uStar",G%HI,haloshift=0, scale=US%Z_to_m*US%s_to_T)
-    call hchksum(buoyFlux, "KPP in: buoyFlux",G%HI,haloshift=0, scale=US%L_to_m**2*US%s_to_T**3)
-    call hchksum(Kt, "KPP in: Kt",G%HI,haloshift=0, scale=GV%HZ_T_to_m2_s)
-    call hchksum(Ks, "KPP in: Ks",G%HI,haloshift=0, scale=GV%HZ_T_to_m2_s)
+    call hchksum(h, "KPP in: h", G%HI, haloshift=0, unscale=GV%H_to_m)
+    call hchksum(uStar, "KPP in: uStar", G%HI, haloshift=0, unscale=US%Z_to_m*US%s_to_T)
+    call hchksum(buoyFlux, "KPP in: buoyFlux", G%HI, haloshift=0, unscale=US%L_to_m**2*US%s_to_T**3)
+    call hchksum(Kt, "KPP in: Kt", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
+    call hchksum(Ks, "KPP in: Ks", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
   endif
 
   nonLocalTrans(:,:) = 0.0
@@ -969,8 +969,8 @@ subroutine KPP_calculate(CS, G, GV, US, h, tv, uStar, buoyFlux, Kt, Ks, Kv, &
   call cpu_clock_end(id_clock_KPP_calc)
 
   if (CS%debug) then
-    call hchksum(Kt, "KPP out: Kt", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
-    call hchksum(Ks, "KPP out: Ks", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
+    call hchksum(Kt, "KPP out: Kt", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
+    call hchksum(Ks, "KPP out: Ks", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
   endif
 
   ! send diagnostics to post_data
@@ -1083,20 +1083,20 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
       "KPP_compute_BLD: The Waves control structure must be associated if STOKES_MIXING is True.")
 
   if (CS%debug) then
-    call hchksum(Salt, "KPP in: S", G%HI, haloshift=0, scale=US%S_to_ppt)
-    call hchksum(Temp, "KPP in: T", G%HI, haloshift=0, scale=US%C_to_degC)
-    call hchksum(u, "KPP in: u",G%HI,haloshift=0,scale=US%L_T_to_m_s)
-    call hchksum(v, "KPP in: v",G%HI,haloshift=0,scale=US%L_T_to_m_s)
+    call hchksum(Salt, "KPP in: S", G%HI, haloshift=0, unscale=US%S_to_ppt)
+    call hchksum(Temp, "KPP in: T", G%HI, haloshift=0, unscale=US%C_to_degC)
+    call hchksum(u, "KPP in: u", G%HI, haloshift=0, unscale=US%L_T_to_m_s)
+    call hchksum(v, "KPP in: v", G%HI, haloshift=0, unscale=US%L_T_to_m_s)
   endif
 
   call cpu_clock_begin(id_clock_KPP_compute_BLD)
 
   ! some constants
-  GoRho = US%Z_to_m*US%s_to_T**2 * (US%L_to_Z**2 * GV%g_Earth / GV%Rho0)
+  GoRho = US%Z_to_m*US%s_to_T**2 * (GV%g_Earth_Z_T2 / GV%Rho0)
   if (GV%Boussinesq) then
-    GoRho_Z_L2 = US%L_to_Z**2 * GV%Z_to_H * GV%g_Earth / GV%Rho0
+    GoRho_Z_L2 = GV%Z_to_H * GV%g_Earth_Z_T2 / GV%Rho0
   else
-    GoRho_Z_L2 = US%L_to_Z**2 * GV%g_Earth * GV%RZ_to_H
+    GoRho_Z_L2 = GV%g_Earth_Z_T2 * GV%RZ_to_H
   endif
   buoy_scale = US%L_to_m**2*US%s_to_T**3
 
@@ -1270,7 +1270,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
 
         endif     ! StokesMOST
 
-        deltaU2(k) = US%L_T_to_m_s**2 * (Uk**2 + Vk**2)
+        deltaU2(k) = US%L_T_to_m_s**2 * ((Uk**2) + (Vk**2))
 
         ! pressure, temperature, and salinity for calling the equation of state
         ! kk+1 = surface fields
@@ -1294,7 +1294,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
 
       enddo ! k-loop finishes
 
-      if ( (CS%LT_K_ENHANCEMENT .or. CS%LT_VT2_ENHANCEMENT) .and. .not. present(lamult)) then
+      if ( (CS%LT_K_ENHANCEMENT .or. CS%LT_VT2_ENHANCEMENT)) then
         MLD_guess = max( CS%MLD_guess_min, abs(CS%OBLdepthprev(i,j) ) )
         call get_Langmuir_Number(LA, G, GV, US, MLD_guess, uStar(i,j), i, j, &
                                  dz=dz(i,j,:), U_H=U_H, V_H=V_H, WAVES=WAVES)
@@ -1315,7 +1315,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
         if (GV%Boussinesq .or. GV%semi_Boussinesq) then
           deltaBuoy(k) = GoRho*(rho_1D(kk+2) - rho_1D(kk+1))
         else
-          deltaBuoy(k) = (US%Z_to_m*US%s_to_T**2) * (US%L_to_Z**2 * GV%g_Earth) * &
+          deltaBuoy(k) = (US%Z_to_m*US%s_to_T**2) * GV%g_Earth_Z_T2 * &
               ( (rho_1D(kk+2) - rho_1D(kk+1)) / (0.5 * (rho_1D(kk+2) + rho_1D(kk+1))) )
         endif
         N2_1d(k)    = (GoRho_Z_L2 * (rho_1D(kk+2) - rho_1D(kk+3)) ) / &
@@ -1459,7 +1459,7 @@ subroutine KPP_compute_BLD(CS, G, GV, US, h, Temp, Salt, u, v, tv, uStar, buoyFl
                     bfsfc=surfBuoyFlux2, & ! surface buoyancy flux [m2 s-3]
                     uStar=surfFricVel,  & ! surface friction velocity [m s-1]
                     CVmix_kpp_params_user=CS%KPP_params ) ! KPP parameters
-        CS%Vt2(i,j,:) = US%m_to_Z*US%T_to_s * Vt2_1d(:)
+        CS%Vt2(i,j,:) = US%m_to_Z**2*US%T_to_s**2 * Vt2_1d(:)
       endif
 
       ! recompute wscale for diagnostics, now that we in fact know boundary layer depth

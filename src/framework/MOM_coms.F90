@@ -4,6 +4,7 @@ module MOM_coms
 
 ! This file is part of MOM6. See LICENSE.md for the license.
 
+use, intrinsic :: iso_fortran_env, only : int64
 use MOM_coms_infra,    only : PE_here, root_PE, num_PEs, set_rootPE, Set_PElist, Get_PElist
 use MOM_coms_infra,    only : broadcast, field_chksum, MOM_infra_init, MOM_infra_end
 use MOM_coms_infra,    only : sum_across_PEs, max_across_PEs, min_across_PEs
@@ -22,12 +23,13 @@ public :: reproducing_sum, reproducing_sum_EFP, EFP_sum_across_PEs, EFP_list_sum
 public :: EFP_plus, EFP_minus, EFP_to_real, real_to_EFP, EFP_real_diff
 public :: operator(+), operator(-), assignment(=)
 public :: query_EFP_overflow_error, reset_EFP_overflow_error
+public :: max_count_prec
 
 ! This module provides interfaces to the non-domain-oriented communication subroutines.
 
-integer(kind=8), parameter :: prec=2_8**46 !< The precision of each integer.
-real, parameter :: r_prec=2.0**46  !< A real version of prec.
-real, parameter :: I_prec=1.0/(2.0**46) !< The inverse of prec.
+integer(kind=int64), parameter :: prec = (2_int64)**46 !< The precision of each integer.
+real, parameter :: r_prec=2.0**46  !< A real version of prec [nondim].
+real, parameter :: I_prec=1.0/(2.0**46) !< The inverse of prec [nondim].
 integer, parameter :: max_count_prec=2**(63-46)-1
                               !< The number of values that can be added together
                               !! with the current value of prec before there will
@@ -37,12 +39,12 @@ integer, parameter :: ni=6    !< The number of long integers to use to represent
                               !< a real number.
 real, parameter, dimension(ni) :: &
   pr = (/ r_prec**2, r_prec, 1.0, 1.0/r_prec, 1.0/r_prec**2, 1.0/r_prec**3 /)
-    !< An array of the real precision of each of the integers
+    !< An array of the real precision of each of the integers in arbitrary units [a]
 real, parameter, dimension(ni) :: &
   I_pr = (/ 1.0/r_prec**2, 1.0/r_prec, 1.0, r_prec, r_prec**2, r_prec**3 /)
-    !< An array of the inverse of the real precision of each of the integers
+    !< An array of the inverse of the real precision of each of the integers in arbitrary units [a-1]
 real, parameter :: max_efp_float = pr(1) * (2.**63 - 1.)
-                              !< The largest float with an EFP representation.
+                              !< The largest float with an EFP representation in arbitrary units [a].
                               !! NOTE: Only the first bin can exceed precision,
                               !! but is bounded by the largest signed integer.
 
@@ -50,7 +52,8 @@ logical :: overflow_error = .false. !< This becomes true if an overflow is encou
 logical :: NaN_error = .false.      !< This becomes true if a NaN is encountered.
 logical :: debug = .false.          !< Making this true enables debugging output.
 
-!> Find an accurate and order-invariant sum of a distributed 2d or 3d field
+!> Find an accurate and order-invariant sum of a distributed 2d or 3d field, in some cases after
+!! undoing the scaling of the input array and restoring that scaling in the returned value
 interface reproducing_sum
   module procedure reproducing_sum_2d, reproducing_sum_3d
 end interface reproducing_sum
@@ -73,7 +76,7 @@ end interface EFP_sum_across_PEs
 !!   Hallberg, R. & A. Adcroft, 2014: An Order-invariant Real-to-Integer Conversion Sum.
 !!   Parallel Computing, 40(5-6), doi:10.1016/j.parco.2014.04.007.
 type, public :: EFP_type ; private
-  integer(kind=8), dimension(ni) :: v !< The value in this type
+  integer(kind=int64), dimension(ni) :: v !< The value in this type
 end type EFP_type
 
 !> Add two extended-fixed-point numbers
@@ -90,8 +93,9 @@ contains
 !! the result returned as an extended fixed point type that can be converted back to a real number
 !! using EFP_to_real.  This technique is described in Hallberg & Adcroft, 2014, Parallel Computing,
 !! doi:10.1016/j.parco.2014.04.007.
-function reproducing_EFP_sum_2d(array, isr, ier, jsr, jer, overflow_check, err, only_on_PE) result(EFP_sum)
-  real, dimension(:,:),     intent(in)  :: array   !< The array to be summed
+function reproducing_EFP_sum_2d(array, isr, ier, jsr, jer, overflow_check, err, only_on_PE, unscale) result(EFP_sum)
+  real, dimension(:,:),     intent(in)  :: array   !< The array to be summed in arbitrary units [a], or in
+                                                   !! arbitrary scaled units [A ~> a] if unscale is present
   integer,        optional, intent(in)  :: isr     !< The starting i-index of the sum, noting
                                                    !! that the array indices starts at 1
   integer,        optional, intent(in)  :: ier     !< The ending i-index of the sum, noting
@@ -101,25 +105,28 @@ function reproducing_EFP_sum_2d(array, isr, ier, jsr, jer, overflow_check, err, 
   integer,        optional, intent(in)  :: jer     !< The ending j-index of the sum, noting
                                                    !! that the array indices starts at 1
   logical,        optional, intent(in)  :: overflow_check !< If present and false, disable
-                                                !! checking for overflows in incremental results.
-                                                !! This can speed up calculations if the number
-                                                !! of values being summed is small enough
-  integer,        optional, intent(out) :: err  !< If present, return an error code instead of
-                                                !! triggering any fatal errors directly from
-                                                !! this routine.
+                                                   !! checking for overflows in incremental results.
+                                                   !! This can speed up calculations if the number
+                                                   !! of values being summed is small enough
+  integer,        optional, intent(out) :: err     !< If present, return an error code instead of
+                                                   !! triggering any fatal errors directly from
+                                                   !! this routine.
   logical,        optional, intent(in)  :: only_on_PE !< If present and true, do not do the sum
-                                                !! across processors, only reporting the local sum
-  type(EFP_type)                        :: EFP_sum  !< The result in extended fixed point format
+                                                   !! across processors, only reporting the local sum
+  real,           optional, intent(in)  :: unscale !< A factor that is used to undo scaling of array before it is
+                                                   !! summed, often to compensate for the scaling in [a A-1 ~> 1]
+  type(EFP_type)                        :: EFP_sum !< The result in extended fixed point format
 
   !   This subroutine uses a conversion to an integer representation
   ! of real numbers to give order-invariant sums that will reproduce
   ! across PE count.  This idea comes from R. Hallberg and A. Adcroft.
 
-  integer(kind=8), dimension(ni)  :: ints_sum
-  integer(kind=8) :: ival, prec_error
-  real    :: rs
-  real    :: max_mag_term
-  logical :: over_check, do_sum_across_PEs
+  integer(kind=int64), dimension(ni)  :: ints_sum
+  integer(kind=int64) :: ival, prec_error
+  real    :: rs ! The remaining value to add, in arbitrary units [a]
+  real    :: max_mag_term ! A running maximum magnitude of the values in arbitrary units [a]
+  real    :: descale    ! A local copy of unscale if it is present [a A-1 ~> 1] or 1
+  logical :: over_check, do_sum_across_PEs, do_unscale
   character(len=256) :: mesg
   integer :: i, j, n, is, ie, js, je, sgn
 
@@ -127,9 +134,9 @@ function reproducing_EFP_sum_2d(array, isr, ier, jsr, jer, overflow_check, err, 
     "reproducing_sum: Too many processors are being used for the value of "//&
     "prec.  Reduce prec to (2^63-1)/num_PEs.")
 
-  prec_error = (2_8**62 + (2_8**62 - 1)) / num_PEs()
+  prec_error = ((2_int64)**62 + ((2_int64)**62 - 1)) / num_PEs()
 
-  is = 1 ; ie = size(array,1) ; js = 1 ; je = size(array,2 )
+  is = 1 ; ie = size(array,1) ; js = 1 ; je = size(array,2)
   if (present(isr)) then
     if (isr < is) call MOM_error(FATAL, "Value of isr too small in reproducing_EFP_sum_2d.")
     is = isr
@@ -149,34 +156,42 @@ function reproducing_EFP_sum_2d(array, isr, ier, jsr, jer, overflow_check, err, 
 
   over_check = .true. ; if (present(overflow_check)) over_check = overflow_check
   do_sum_across_PEs = .true. ; if (present(only_on_PE)) do_sum_across_PEs = .not.only_on_PE
+  do_unscale = .false. ; if (present(unscale)) do_unscale = (unscale /= 1.0)
+  descale = 1.0 ; if (do_unscale) descale = unscale
 
   overflow_error = .false. ; NaN_error = .false. ; max_mag_term = 0.0
   ints_sum(:) = 0
   if (over_check) then
     if ((je+1-js)*(ie+1-is) < max_count_prec) then
-      do j=js,je ; do i=is,ie
-        call increment_ints_faster(ints_sum, array(i,j), max_mag_term)
-      enddo ; enddo
+      ! This is the most common case, so handle the do_unscale case separately for efficiency.
+      if (do_unscale) then
+        do j=js,je ; do i=is,ie
+          call increment_ints_faster(ints_sum, unscale*array(i,j), max_mag_term)
+        enddo ; enddo
+      else
+        do j=js,je ; do i=is,ie
+          call increment_ints_faster(ints_sum, array(i,j), max_mag_term)
+        enddo ; enddo
+      endif
       call carry_overflow(ints_sum, prec_error)
     elseif ((ie+1-is) < max_count_prec) then
       do j=js,je
         do i=is,ie
-          call increment_ints_faster(ints_sum, array(i,j), max_mag_term)
+          call increment_ints_faster(ints_sum, descale*array(i,j), max_mag_term)
         enddo
         call carry_overflow(ints_sum, prec_error)
       enddo
     else
       do j=js,je ; do i=is,ie
-        call increment_ints(ints_sum, real_to_ints(array(i,j), prec_error), &
-                            prec_error)
+        call increment_ints(ints_sum, real_to_ints(descale*array(i,j), prec_error), prec_error)
       enddo ; enddo
     endif
   else
     do j=js,je ; do i=is,ie
       sgn = 1 ; if (array(i,j)<0.0) sgn = -1
-      rs = abs(array(i,j))
+      rs = abs(descale*array(i,j))
       do n=1,ni
-        ival = int(rs*I_pr(n), 8)
+        ival = int(rs*I_pr(n), kind=int64)
         rs = rs - ival*pr(n)
         ints_sum(n) = ints_sum(n) + sgn*ival
       enddo
@@ -212,13 +227,15 @@ function reproducing_EFP_sum_2d(array, isr, ier, jsr, jer, overflow_check, err, 
 
 end function reproducing_EFP_sum_2d
 
+
 !> This subroutine uses a conversion to an integer representation of real numbers to give an
 !! order-invariant sum of distributed 2-D arrays that reproduces across domain decomposition.
 !! This technique is described in Hallberg & Adcroft, 2014, Parallel Computing,
 !! doi:10.1016/j.parco.2014.04.007.
 function reproducing_sum_2d(array, isr, ier, jsr, jer, EFP_sum, reproducing, &
-                            overflow_check, err, only_on_PE) result(sum)
-  real, dimension(:,:),     intent(in)  :: array   !< The array to be summed
+                            overflow_check, err, only_on_PE, unscale) result(sum)
+  real, dimension(:,:),     intent(in)  :: array   !< The array to be summed in arbitrary units [a], or in
+                                                   !! arbitrary scaled units [A ~> a] if unscale is present
   integer,        optional, intent(in)  :: isr     !< The starting i-index of the sum, noting
                                                    !! that the array indices starts at 1
   integer,        optional, intent(in)  :: ier     !< The ending i-index of the sum, noting
@@ -227,7 +244,7 @@ function reproducing_sum_2d(array, isr, ier, jsr, jer, EFP_sum, reproducing, &
                                                    !! that the array indices starts at 1
   integer,        optional, intent(in)  :: jer     !< The ending j-index of the sum, noting
                                                    !! that the array indices starts at 1
-  type(EFP_type), optional, intent(out) :: EFP_sum  !< The result in extended fixed point format
+  type(EFP_type), optional, intent(out) :: EFP_sum !< The result in extended fixed point format
   logical,        optional, intent(in)  :: reproducing !< If present and false, do the sum
                                                 !! using the naive non-reproducing approach
   logical,        optional, intent(in)  :: overflow_check !< If present and false, disable
@@ -239,16 +256,18 @@ function reproducing_sum_2d(array, isr, ier, jsr, jer, EFP_sum, reproducing, &
                                                 !! this routine.
   logical,        optional, intent(in)  :: only_on_PE !< If present and true, do not do the sum
                                                 !! across processors, only reporting the local sum
-  real                                  :: sum  !< Result
+  real,           optional, intent(in)  :: unscale !< A factor that is used to undo scaling of array before it is
+                                                   !! summed, often to compensate for the scaling in [a A-1 ~> 1]
+  real                                  :: sum     !< The sum of the values in array in the same
+                                                   !! arbitrary units as array [a] or [A ~> a]
 
-  !   This subroutine uses a conversion to an integer representation
-  ! of real numbers to give order-invariant sums that will reproduce
-  ! across PE count.  This idea comes from R. Hallberg and A. Adcroft.
-
-  integer(kind=8), dimension(ni)  :: ints_sum
-  integer(kind=8) :: prec_error
-  real    :: rsum(1)
-  logical :: repro, do_sum_across_PEs
+  ! Local variables
+  integer(kind=int64), dimension(ni)  :: ints_sum
+  integer(kind=int64) :: prec_error
+  real    :: rsum(1)    ! The running sum, in arbitrary units [a]
+  real    :: descale    ! A local copy of unscale if it is present [a A-1 ~> 1] or 1
+  real    :: I_unscale  ! The reciprocal of unscale [A a-1 ~> 1]
+  logical :: repro, do_sum_across_PEs, do_unscale
   character(len=256) :: mesg
   type(EFP_type) :: EFP_val ! An extended fixed point version of the sum
   integer :: i, j, is, ie, js, je
@@ -257,9 +276,9 @@ function reproducing_sum_2d(array, isr, ier, jsr, jer, EFP_sum, reproducing, &
     "reproducing_sum: Too many processors are being used for the value of "//&
     "prec.  Reduce prec to (2^63-1)/num_PEs.")
 
-  prec_error = (2_8**62 + (2_8**62 - 1)) / num_PEs()
+  prec_error = ((2_int64)**62 + ((2_int64)**62 - 1)) / num_PEs()
 
-  is = 1 ; ie = size(array,1) ; js = 1 ; je = size(array,2 )
+  is = 1 ; ie = size(array,1) ; js = 1 ; je = size(array,2)
   if (present(isr)) then
     if (isr < is) call MOM_error(FATAL, "Value of isr too small in reproducing_sum_2d.")
     is = isr
@@ -279,19 +298,25 @@ function reproducing_sum_2d(array, isr, ier, jsr, jer, EFP_sum, reproducing, &
 
   repro = .true. ; if (present(reproducing)) repro = reproducing
   do_sum_across_PEs = .true. ; if (present(only_on_PE)) do_sum_across_PEs = .not.only_on_PE
+  do_unscale = .false. ; if (present(unscale)) do_unscale = (unscale /= 1.0)
+  descale = 1.0 ;  I_unscale = 1.0
+  if (do_unscale) then
+    descale = unscale
+    if (abs(unscale) > 0.0) I_unscale = 1.0 / unscale
+  endif
 
   if (repro) then
-    EFP_val = reproducing_EFP_sum_2d(array, isr, ier, jsr, jer, overflow_check, err, only_on_PE)
-    sum = ints_to_real(EFP_val%v)
+    EFP_val = reproducing_EFP_sum_2d(array, isr, ier, jsr, jer, overflow_check, err, only_on_PE, unscale)
+    sum = ints_to_real(EFP_val%v) * I_unscale
     if (present(EFP_sum)) EFP_sum = EFP_val
     if (debug) ints_sum(:) = EFP_sum%v(:)
   else
     rsum(1) = 0.0
     do j=js,je ; do i=is,ie
-      rsum(1) = rsum(1) + array(i,j)
+      rsum(1) = rsum(1) + descale*array(i,j)
     enddo ; enddo
     if (do_sum_across_PEs) call sum_across_PEs(rsum,1)
-    sum = rsum(1)
+    sum = rsum(1) * I_unscale
 
     if (present(err)) then ; err = 0 ; endif
 
@@ -311,7 +336,7 @@ function reproducing_sum_2d(array, isr, ier, jsr, jer, EFP_sum, reproducing, &
   endif
 
   if (debug) then
-    write(mesg,'("2d RS: ", ES24.16, 6 Z17.16)') sum, ints_sum(1:ni)
+    write(mesg,'("2d RS: ", ES24.16, 6 Z17.16)') sum*descale, ints_sum(1:ni)
     call MOM_mesg(mesg, 3)
   endif
 
@@ -321,9 +346,10 @@ end function reproducing_sum_2d
 !! order-invariant sum of distributed 3-D arrays that reproduces across domain decomposition.
 !! This technique is described in Hallberg & Adcroft, 2014, Parallel Computing,
 !! doi:10.1016/j.parco.2014.04.007.
-function reproducing_sum_3d(array, isr, ier, jsr, jer, sums, EFP_sum, EFP_lay_sums, err, only_on_PE) &
+function reproducing_sum_3d(array, isr, ier, jsr, jer, sums, EFP_sum, EFP_lay_sums, err, only_on_PE, unscale) &
                             result(sum)
-  real, dimension(:,:,:),       intent(in)  :: array   !< The array to be summed
+  real, dimension(:,:,:),       intent(in)  :: array   !< The array to be summed in arbitrary units [a], or in
+                                                       !! arbitrary scaled units [A ~> a] if unscale is present
   integer,            optional, intent(in)  :: isr     !< The starting i-index of the sum, noting
                                                        !! that the array indices starts at 1
   integer,            optional, intent(in)  :: ier     !< The ending i-index of the sum, noting
@@ -332,34 +358,38 @@ function reproducing_sum_3d(array, isr, ier, jsr, jer, sums, EFP_sum, EFP_lay_su
                                                        !! that the array indices starts at 1
   integer,            optional, intent(in)  :: jer     !< The ending j-index of the sum, noting
                                                        !! that the array indices starts at 1
-  real, dimension(:), optional, intent(out) :: sums    !< The sums by vertical layer
+  real, dimension(:), optional, intent(out) :: sums    !< The sums by vertical layer in the same
+                                                       !! abitrary units as array [a] or [A ~> a]
   type(EFP_type),     optional, intent(out) :: EFP_sum !< The result in extended fixed point format
   type(EFP_type), dimension(:), &
                       optional, intent(out) :: EFP_lay_sums !< The sums by vertical layer in EFP format
-  integer,            optional, intent(out) :: err  !< If present, return an error code instead of
-                                                    !! triggering any fatal errors directly from
-                                                    !! this routine.
+  integer,            optional, intent(out) :: err     !< If present, return an error code instead of
+                                                       !! triggering any fatal errors directly from
+                                                       !! this routine.
   logical,            optional, intent(in)  :: only_on_PE !< If present and true, do not do the sum
-                                                    !! across processors, only reporting the local sum
-  real                                      :: sum  !< Result
+                                                       !! across processors, only reporting the local sum
+  real,               optional, intent(in)  :: unscale !< A factor that is used to undo scaling of array before it is
+                                                       !! summed, often to compensate for the scaling in [a A-1 ~> 1]
+  real                                      :: sum     !< The sum of the values in array in the same
+                                                       !! arbitrary units as array [a] or [A ~> a]
 
-  !   This subroutine uses a conversion to an integer representation
-  ! of real numbers to give order-invariant sums that will reproduce
-  ! across PE count.  This idea comes from R. Hallberg and A. Adcroft.
-
-  real    :: val, max_mag_term
-  integer(kind=8), dimension(ni)  :: ints_sum
-  integer(kind=8), dimension(ni,size(array,3))  :: ints_sums
-  integer(kind=8) :: prec_error
+  ! Local variables
+  real    :: val ! The real number that is extracted in arbitrary units [a]
+  real    :: max_mag_term ! A running maximum magnitude of the val's in arbitrary units [a]
+  real    :: descale    ! A local copy of unscale if it is present [a A-1 ~> 1] or 1
+  real    :: I_unscale  ! The Adcroft reciprocal of unscale [A a-1 ~> 1]
+  integer(kind=int64), dimension(ni)  :: ints_sum
+  integer(kind=int64), dimension(ni,size(array,3))  :: ints_sums
+  integer(kind=int64) :: prec_error
   character(len=256) :: mesg
-  logical :: do_sum_across_PEs
+  logical :: do_sum_across_PEs, do_unscale
   integer :: i, j, k, is, ie, js, je, ke, isz, jsz, n
 
   if (num_PEs() > max_count_prec) call MOM_error(FATAL, &
     "reproducing_sum: Too many processors are being used for the value of "//&
     "prec.  Reduce prec to (2^63-1)/num_PEs.")
 
-  prec_error = (2_8**62 + (2_8**62 - 1)) / num_PEs()
+  prec_error = ((2_int64)**62 + ((2_int64)**62 - 1)) / num_PEs()
   max_mag_term = 0.0
 
   is = 1 ; ie = size(array,1) ; js = 1 ; je = size(array,2) ; ke = size(array,3)
@@ -382,6 +412,8 @@ function reproducing_sum_3d(array, isr, ier, jsr, jer, sums, EFP_sum, EFP_lay_su
   jsz = je+1-js; isz = ie+1-is
 
   do_sum_across_PEs = .true. ; if (present(only_on_PE)) do_sum_across_PEs = .not.only_on_PE
+  do_unscale = .false. ; if (present(unscale)) do_unscale = (unscale /= 1.0)
+  descale = 1.0 ; if (do_unscale) descale = unscale
 
   if (present(sums) .or. present(EFP_lay_sums)) then
     if (present(sums)) then ; if (size(sums) < ke) then
@@ -394,22 +426,28 @@ function reproducing_sum_3d(array, isr, ier, jsr, jer, sums, EFP_sum, EFP_lay_su
     overflow_error = .false. ; NaN_error = .false. ; max_mag_term = 0.0
     if (jsz*isz < max_count_prec) then
       do k=1,ke
-        do j=js,je ; do i=is,ie
-          call increment_ints_faster(ints_sums(:,k), array(i,j,k), max_mag_term)
-        enddo ; enddo
+        if (do_unscale) then
+          do j=js,je ; do i=is,ie
+            call increment_ints_faster(ints_sums(:,k), unscale*array(i,j,k), max_mag_term)
+          enddo ; enddo
+        else
+          do j=js,je ; do i=is,ie
+            call increment_ints_faster(ints_sums(:,k), array(i,j,k), max_mag_term)
+          enddo ; enddo
+        endif
         call carry_overflow(ints_sums(:,k), prec_error)
       enddo
     elseif (isz < max_count_prec) then
       do k=1,ke ; do j=js,je
         do i=is,ie
-          call increment_ints_faster(ints_sums(:,k), array(i,j,k), max_mag_term)
+          call increment_ints_faster(ints_sums(:,k), descale*array(i,j,k), max_mag_term)
         enddo
         call carry_overflow(ints_sums(:,k), prec_error)
       enddo ; enddo
     else
       do k=1,ke ; do j=js,je ; do i=is,ie
         call increment_ints(ints_sums(:,k), &
-                            real_to_ints(array(i,j,k), prec_error), prec_error)
+                            real_to_ints(descale*array(i,j,k), prec_error), prec_error)
       enddo ; enddo ; enddo
     endif
     if (present(err)) then
@@ -456,21 +494,27 @@ function reproducing_sum_3d(array, isr, ier, jsr, jer, sums, EFP_sum, EFP_lay_su
     overflow_error = .false. ; NaN_error = .false. ; max_mag_term = 0.0
     if (jsz*isz < max_count_prec) then
       do k=1,ke
-        do j=js,je ; do i=is,ie
-          call increment_ints_faster(ints_sum, array(i,j,k), max_mag_term)
-        enddo ; enddo
+        if (do_unscale) then
+          do j=js,je ; do i=is,ie
+            call increment_ints_faster(ints_sum, unscale*array(i,j,k), max_mag_term)
+          enddo ; enddo
+        else
+          do j=js,je ; do i=is,ie
+            call increment_ints_faster(ints_sum, array(i,j,k), max_mag_term)
+          enddo ; enddo
+        endif
         call carry_overflow(ints_sum, prec_error)
       enddo
     elseif (isz < max_count_prec) then
       do k=1,ke ; do j=js,je
         do i=is,ie
-          call increment_ints_faster(ints_sum, array(i,j,k), max_mag_term)
+          call increment_ints_faster(ints_sum, descale*array(i,j,k), max_mag_term)
         enddo
         call carry_overflow(ints_sum, prec_error)
       enddo ; enddo
     else
       do k=1,ke ; do j=js,je ; do i=is,ie
-        call increment_ints(ints_sum, real_to_ints(array(i,j,k), prec_error), &
+        call increment_ints(ints_sum, real_to_ints(descale*array(i,j,k), prec_error), &
                             prec_error)
       enddo ; enddo ; enddo
     endif
@@ -502,28 +546,39 @@ function reproducing_sum_3d(array, isr, ier, jsr, jer, sums, EFP_sum, EFP_lay_su
     endif
   endif
 
+  if (do_unscale) then
+    ! Revise the sum to restore the scaling of input array before it is returned
+    I_unscale = 0.0 ; if (abs(unscale) > 0.0) I_unscale = 1.0 / unscale
+    sum = sum * I_unscale
+    if (present(sums)) then
+      do k=1,ke ; sums(k) = sums(k) * I_unscale ; enddo
+    endif
+  endif
+
 end function reproducing_sum_3d
 
 !> Convert a real number into the array of integers constitute its extended-fixed-point representation
 function real_to_ints(r, prec_error, overflow) result(ints)
-  real,                      intent(in) :: r  !< The real number being converted
-  integer(kind=8), optional, intent(in) :: prec_error  !< The PE-count dependent precision of the
+  real,                      intent(in) :: r  !< The real number being converted in arbitrary units [a]
+  integer(kind=int64), optional, intent(in) :: prec_error  !< The PE-count dependent precision of the
                                               !! integers that is safe from overflows during global
                                               !! sums.  This will be larger than the compile-time
                                               !! precision parameter, and is used to detect overflows.
   logical,         optional, intent(inout) :: overflow !< Returns true if the conversion is being
                                               !! done on a value that is too large to be represented
-  integer(kind=8), dimension(ni)  :: ints
+  integer(kind=int64), dimension(ni)  :: ints
+
   !   This subroutine converts a real number to an equivalent representation
   ! using several long integers.
 
-  real :: rs
+  ! Local variables
+  real :: rs  ! The remaining value to add, in arbitrary units [a]
   character(len=80) :: mesg
-  integer(kind=8) :: ival, prec_err
+  integer(kind=int64) :: ival, prec_err
   integer :: sgn, i
 
   prec_err = prec ; if (present(prec_error)) prec_err = prec_error
-  ints(:) = 0_8
+  ints(:) = 0
   if ((r >= 1e30) .eqv. (r < 1e30)) then ; NaN_error = .true. ; return ; endif
 
   sgn = 1 ; if (r<0.0) sgn = -1
@@ -538,7 +593,7 @@ function real_to_ints(r, prec_error, overflow) result(ints)
   endif
 
   do i=1,ni
-    ival = int(rs*I_pr(i), 8)
+    ival = int(rs*I_pr(i), kind=int64)
     rs = rs - ival*pr(i)
     ints(i) = sgn*ival
   enddo
@@ -548,8 +603,8 @@ end function real_to_ints
 !> Convert the array of integers that constitute an extended-fixed-point
 !! representation into a real number
 function ints_to_real(ints) result(r)
-  integer(kind=8), dimension(ni), intent(in) :: ints !< The array of EFP integers
-  real :: r
+  integer(kind=int64), dimension(ni), intent(in) :: ints !< The array of EFP integers
+  real :: r  ! The real number that is extracted in arbitrary units [a]
   ! This subroutine reverses the conversion in real_to_ints.
 
   integer :: i
@@ -561,9 +616,9 @@ end function ints_to_real
 !> Increment an array of integers that constitutes an extended-fixed-point
 !! representation with a another EFP number
 subroutine increment_ints(int_sum, int2, prec_error)
-  integer(kind=8), dimension(ni), intent(inout) :: int_sum !< The array of EFP integers being incremented
-  integer(kind=8), dimension(ni), intent(in)    :: int2    !< The array of EFP integers being added
-  integer(kind=8), optional,      intent(in)    :: prec_error !< The PE-count dependent precision of the
+  integer(kind=int64), dimension(ni), intent(inout) :: int_sum !< The array of EFP integers being incremented
+  integer(kind=int64), dimension(ni), intent(in)    :: int2    !< The array of EFP integers being added
+  integer(kind=int64), optional,      intent(in)    :: prec_error !< The PE-count dependent precision of the
                                               !! integers that is safe from overflows during global
                                               !! sums.  This will be larger than the compile-time
                                               !! precision parameter, and is used to detect overflows.
@@ -595,15 +650,16 @@ end subroutine increment_ints
 !> Increment an EFP number with a real number without doing any carrying of
 !! of overflows and using only minimal error checking.
 subroutine increment_ints_faster(int_sum, r, max_mag_term)
-  integer(kind=8), dimension(ni), intent(inout) :: int_sum  !< The array of EFP integers being incremented
-  real,                           intent(in)    :: r        !< The real number being added.
-  real,                           intent(inout) :: max_mag_term !< A running maximum magnitude of the r's.
+  integer(kind=int64), dimension(ni), intent(inout) :: int_sum  !< The array of EFP integers being incremented
+  real,                           intent(in)    :: r        !< The real number being added in arbitrary units [a]
+  real,                           intent(inout) :: max_mag_term !< A running maximum magnitude of the r's
+                                                            !! in arbitrary units [a]
 
   ! This subroutine increments a number with another, both using the integer
   ! representation in real_to_ints, but without doing any carrying of overflow.
   ! The entire operation is embedded in a single call for greater speed.
-  real :: rs
-  integer(kind=8) :: ival
+  real :: rs  ! The remaining value to add, in arbitrary units [a]
+  integer(kind=int64) :: ival
   integer :: sgn, i
 
   if ((r >= 1e30) .eqv. (r < 1e30)) then ; NaN_error = .true. ; return ; endif
@@ -618,7 +674,7 @@ subroutine increment_ints_faster(int_sum, r, max_mag_term)
   endif
 
   do i=1,ni
-    ival = int(rs*I_pr(i), 8)
+    ival = int(rs*I_pr(i), kind=int64)
     rs = rs - ival*pr(i)
     int_sum(i) = int_sum(i) + sgn*ival
   enddo
@@ -627,9 +683,9 @@ end subroutine increment_ints_faster
 
 !> This subroutine handles carrying of the overflow.
 subroutine carry_overflow(int_sum, prec_error)
-  integer(kind=8), dimension(ni), intent(inout) :: int_sum  !< The array of EFP integers being
+  integer(kind=int64), dimension(ni), intent(inout) :: int_sum  !< The array of EFP integers being
                                               !! modified by carries, but without changing value.
-  integer(kind=8),                intent(in)    :: prec_error  !< The PE-count dependent precision of the
+  integer(kind=int64),                intent(in)    :: prec_error  !< The PE-count dependent precision of the
                                               !! integers that is safe from overflows during global
                                               !! sums.  This will be larger than the compile-time
                                               !! precision parameter, and is used to detect overflows.
@@ -651,7 +707,7 @@ end subroutine carry_overflow
 !> This subroutine carries the overflow, and then makes sure that
 !! all integers are of the same sign as the overall value.
 subroutine regularize_ints(int_sum)
-  integer(kind=8), dimension(ni), &
+  integer(kind=int64), dimension(ni), &
     intent(inout) :: int_sum !< The array of integers being modified to take a
                              !! regular form with all integers of the same sign,
                              !! but without changing value.
@@ -740,7 +796,7 @@ end subroutine EFP_assign
 !> Return the real number that an extended-fixed-point number corresponds with
 function EFP_to_real(EFP1)
   type(EFP_type), intent(inout) :: EFP1 !< The extended fixed point number being converted
-  real :: EFP_to_real
+  real :: EFP_to_real  !< The real version of the number in abitrary units [a]
 
   call regularize_ints(EFP1%v)
   EFP_to_real = ints_to_real(EFP1%v)
@@ -752,7 +808,7 @@ function EFP_real_diff(EFP1, EFP2)
   type(EFP_type), intent(in) :: EFP1  !< The first extended fixed point number
   type(EFP_type), intent(in) :: EFP2  !< The extended fixed point number being
                         !! subtracted from the first extended fixed point number
-  real :: EFP_real_diff !< The real result
+  real :: EFP_real_diff !< The real result in arbitrary units [a]
 
   type(EFP_type)             :: EFP_diff
 
@@ -763,7 +819,7 @@ end function EFP_real_diff
 
 !> Return the extended-fixed-point number that a real number corresponds with
 function real_to_EFP(val, overflow)
-  real,              intent(in)    :: val !< The real number being converted
+  real,              intent(in)    :: val !< The real number being converted in arbitrary units [a]
   logical, optional, intent(inout) :: overflow !< Returns true if the conversion is being
                                           !! done on a value that is too large to be represented
   type(EFP_type) :: real_to_EFP
@@ -797,8 +853,8 @@ subroutine EFP_list_sum_across_PEs(EFPs, nval, errors)
   !   This subroutine does a sum across PEs of a list of EFP variables,
   ! returning the sums in place, with all overflows carried.
 
-  integer(kind=8), dimension(ni,nval) :: ints
-  integer(kind=8) :: prec_error
+  integer(kind=int64), dimension(ni,nval) :: ints
+  integer(kind=int64) :: prec_error
   logical :: error_found
   character(len=256) :: mesg
   integer :: i, n
@@ -807,7 +863,7 @@ subroutine EFP_list_sum_across_PEs(EFPs, nval, errors)
     "reproducing_sum: Too many processors are being used for the value of "//&
     "prec.  Reduce prec to (2^63-1)/num_PEs.")
 
-  prec_error = (2_8**62 + (2_8**62 - 1)) / num_PEs()
+  prec_error = ((2_int64)**62 + ((2_int64)**62 - 1)) / num_PEs()
   ! overflow_error is an overflow error flag for the whole module.
   overflow_error = .false. ; error_found = .false.
 
@@ -844,8 +900,8 @@ subroutine EFP_val_sum_across_PEs(EFP, error)
   !   This subroutine does a sum across PEs of a list of EFP variables,
   ! returning the sums in place, with all overflows carried.
 
-  integer(kind=8), dimension(ni) :: ints
-  integer(kind=8) :: prec_error
+  integer(kind=int64), dimension(ni) :: ints
+  integer(kind=int64) :: prec_error
   logical :: error_found
   character(len=256) :: mesg
   integer :: n
@@ -854,7 +910,7 @@ subroutine EFP_val_sum_across_PEs(EFP, error)
     "reproducing_sum: Too many processors are being used for the value of "//&
     "prec.  Reduce prec to (2^63-1)/num_PEs.")
 
-  prec_error = (2_8**62 + (2_8**62 - 1)) / num_PEs()
+  prec_error = ((2_int64)**62 + ((2_int64)**62 - 1)) / num_PEs()
   ! overflow_error is an overflow error flag for the whole module.
   overflow_error = .false. ; error_found = .false.
 

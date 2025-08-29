@@ -4,7 +4,7 @@ module MOM_stoch_eos
 ! This file is part of MOM6. See LICENSE.md for the license.
 use MOM_diag_mediator,    only : register_diag_field, post_data, diag_ctrl
 use MOM_error_handler,    only : MOM_error, FATAL
-use MOM_file_parser,      only : get_param, param_file_type
+use MOM_file_parser,      only : get_param, log_version, param_file_type
 use MOM_grid,             only : ocean_grid_type
 use MOM_hor_index,        only : hor_index_type
 use MOM_isopycnal_slopes, only : vert_fill_TS
@@ -62,27 +62,32 @@ logical function MOM_stoch_eos_init(Time, G, GV, US, param_file, diag, CS, resta
   type(MOM_restart_CS),    pointer       :: restart_CS !< A pointer to the restart control structure.
 
   ! local variables
+  ! This include declares and sets the variable "version".
+# include "version_variable.h"
   integer :: i,j
 
   MOM_stoch_eos_init = .false.
 
   CS%seed = 0
 
+  call log_version(param_file, "MOM_stoch_eos", version, "")
   call get_param(param_file, "MOM_stoch_eos", "STOCH_EOS", CS%use_stoch_eos, &
-                 "If true, stochastic perturbations are applied "//&
-                 "to the EOS in the PGF.", default=.false.)
+                 "If true, computes stochastic perturbations that can be applied "//&
+                 "to the EOS in various places.", default=.false.)
   call get_param(param_file, "MOM_stoch_eos", "STANLEY_COEFF", CS%stanley_coeff, &
                  "Coefficient correlating the temperature gradient "//&
                  "and SGS T variance.", units="nondim", default=-1.0)
+  if ((CS%stanley_coeff < 0.0) .and. CS%use_stoch_eos) call MOM_error(FATAL, &
+                 "STANLEY_COEFF must be set >= 0 if STOCH_EOS is true.")
   call get_param(param_file, "MOM_stoch_eos", "STANLEY_A", CS%stanley_a, &
                  "Coefficient a which scales chi in stochastic perturbation of the "//&
                  "SGS T variance.", units="nondim", default=1.0, &
-                 do_not_log=((CS%stanley_coeff<0.0) .or. .not.CS%use_stoch_eos))
+                 do_not_log=.not.CS%use_stoch_eos)
   call get_param(param_file, "MOM_stoch_eos", "KD_SMOOTH", CS%kappa_smooth, &
                  "A diapycnal diffusivity that is used to interpolate "//&
                  "more sensible values of T & S into thin layers.", &
                  units="m2 s-1", default=1.0e-6, scale=GV%m2_s_to_HZ_T, &
-                 do_not_log=(CS%stanley_coeff<0.0))
+                 do_not_log=.not.CS%use_stoch_eos)
 
   ! Don't run anything if STANLEY_COEFF < 0
   if (CS%stanley_coeff >= 0.0) then
@@ -100,7 +105,7 @@ logical function MOM_stoch_eos_init(Time, G, GV, US, param_file, diag, CS, resta
     ! fill array with approximation of grid area needed for decorrelation time-scale calculation
     do j=G%jsc,G%jec
       do i=G%isc,G%iec
-        CS%l2_inv(i,j) = 1.0/(G%dxT(i,j)**2+G%dyT(i,j)**2)
+        CS%l2_inv(i,j) = 1.0 / ( (G%dxT(i,j)**2) + (G%dyT(i,j)**2) )
       enddo
     enddo
 
@@ -173,7 +178,7 @@ subroutine MOM_stoch_eos_run(G, u, v, delt, Time, CS)
     do i=G%isc,G%iec
       ubar = 0.5*(u(I,j,1)*G%mask2dCu(I,j)+u(I-1,j,1)*G%mask2dCu(I-1,j))
       vbar = 0.5*(v(i,J,1)*G%mask2dCv(i,J)+v(i,J-1,1)*G%mask2dCv(i,J-1))
-      phi = exp(-delt*CS%tfac*sqrt((ubar**2+vbar**2)*CS%l2_inv(i,j)))
+      phi = exp(-delt*CS%tfac * sqrt(((ubar**2) + (vbar**2))*CS%l2_inv(i,j)))
       CS%pattern(i,j) = phi*CS%pattern(i,j) + CS%amplitude*sqrt(1-phi**2)*CS%rgauss(i,j)
       CS%phi(i,j) = phi
     enddo
@@ -233,12 +238,12 @@ subroutine MOM_calc_varT(G, GV, US, h, tv, CS, dt)
         hl(5) = h(i,j+1,k) * G%mask2dCv(i,J)
 
         ! SGS variance in i-direction [C2 ~> degC2]
-        dTdi2 = ( ( G%mask2dCu(I  ,j) * G%IdxCu(I  ,j) * ( T(i+1,j,k) - T(i,j,k) ) &
-                  + G%mask2dCu(I-1,j) * G%IdxCu(I-1,j) * ( T(i,j,k) - T(i-1,j,k) ) &
+        dTdi2 = ( ( G%mask2dCu(I  ,j) * (G%IdxCu(I  ,j) * ( T(i+1,j,k) - T(i,j,k) )) &
+                  + G%mask2dCu(I-1,j) * (G%IdxCu(I-1,j) * ( T(i,j,k) - T(i-1,j,k) )) &
                 ) * G%dxT(i,j) * 0.5 )**2
         ! SGS variance in j-direction [C2 ~> degC2]
-        dTdj2 = ( ( G%mask2dCv(i,J  ) * G%IdyCv(i,J  ) * ( T(i,j+1,k) - T(i,j,k) ) &
-                  + G%mask2dCv(i,J-1) * G%IdyCv(i,J-1) * ( T(i,j,k) - T(i,j-1,k) ) &
+        dTdj2 = ( ( G%mask2dCv(i,J  ) * (G%IdyCv(i,J  ) * ( T(i,j+1,k) - T(i,j,k) )) &
+                  + G%mask2dCv(i,J-1) * (G%IdyCv(i,J-1) * ( T(i,j,k) - T(i,j-1,k) )) &
                 ) * G%dyT(i,j) * 0.5 )**2
         tv%varT(i,j,k) = CS%stanley_coeff * ( dTdi2 + dTdj2 )
         ! Turn off scheme near land
@@ -257,5 +262,31 @@ subroutine MOM_calc_varT(G, GV, US, h, tv, CS, dt)
     enddo
   endif
 end subroutine MOM_calc_varT
+
+!> \namespace mom_stoch_eos
+!!
+!! This module provides the foundation of the Stanley parameterization (\cite stanley2020) for correcting the
+!! computation of density. Density is not a prognostic variable in MOM6; it is computed for various purposes
+!! in various places. The correction to this calculation provided by this module has been implemented
+!! in some places where density is used, but not all.
+!!
+!! To use the correction, first set <code>STOCH_EOS=True</code>. Then, choose the constant c from (25) of
+!! \cite stanley2020. This is controlled using <code>STANLEY_COEFF</code>. Setting a negative value will
+!! result in an error. \cite stanley2020 found a value of 0.2 offline, coarsening from 0.1 to 1 degree
+!! resolution. \cite kenigson2022 proposed a value of 0.5 in a 2/3 degree resolution model.
+!!
+!! Whether the correction is deterministic or stochastic can be controlled using the variable
+!! <code>STANLEY_A</code>. Setting this to 0.0 uses the deterministic version, while a value of 1.0 produces
+!! the stochastic version. Reducing from 1 to 0 smoothly transitions from stochastic to deterministic.
+!!
+!! To turn the correction on in various parts of the code, use
+!! - <code>USE_STANLEY_PGF=True</code> for the pressure gradient force (cf. \cite kenigson2022)
+!! - <code>USE_STANLEY_ISO=True</code> to correct the computation of isopycnal slopes (used in many places)
+!! - <code>USE_STANLEY_GM=True</code> to use the parameterization within GM (cf. \cite agarwal2023)
+!! - <code>USE_STANLEY_ML=True</code> to use the parameterization within the mixed-layer restratification
+!!   parameterization. It applies to both the OM4 and Bodner schemes. (cf. \cite agarwal2023)
+!!
+!! For ensemble simulations, the random number generator seed can be controlled using the parameter
+!! <code>SEED_STOCH_EOS</code>
 
 end module MOM_stoch_eos

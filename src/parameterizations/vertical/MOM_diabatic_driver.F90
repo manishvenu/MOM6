@@ -14,7 +14,6 @@ use MOM_diabatic_aux,        only : diabatic_aux_init, diabatic_aux_end, diabati
 use MOM_diabatic_aux,        only : make_frazil, adjust_salt, differential_diffuse_T_S, triDiagTS
 use MOM_diabatic_aux,        only : triDiagTS_Eulerian, find_uv_at_h
 use MOM_diabatic_aux,        only : applyBoundaryFluxesInOut, set_pen_shortwave
-use MOM_diabatic_aux,        only : diagnoseMLDbyDensityDifference, diagnoseMLDbyEnergy
 use MOM_diag_mediator,       only : post_data, register_diag_field, safe_alloc_ptr
 use MOM_diag_mediator,       only : post_product_sum_u, post_product_sum_v
 use MOM_diag_mediator,       only : diag_ctrl, time_type, diag_update_remap_grids
@@ -22,6 +21,9 @@ use MOM_diag_mediator,       only : diag_ctrl, query_averaging_enabled, enable_a
 use MOM_diag_mediator,       only : diag_grid_storage, diag_grid_storage_init, diag_grid_storage_end
 use MOM_diag_mediator,       only : diag_copy_diag_to_storage, diag_copy_storage_to_diag
 use MOM_diag_mediator,       only : diag_save_grids, diag_restore_grids
+use MOM_diagnose_mld,        only : diagnoseMLDbyDensityDifference, diagnoseMLDbyEnergy
+use MOM_diagnose_kdwork,     only : vbf_CS, KdWork_init, KdWork_end, KdWork_diagnostics
+use MOM_diagnose_kdwork,     only : Allocate_VBF_CS, Deallocate_VBF_CS
 use MOM_diapyc_energy_req,   only : diapyc_energy_req_init, diapyc_energy_req_end
 use MOM_diapyc_energy_req,   only : diapyc_energy_req_calc, diapyc_energy_req_test, diapyc_energy_req_CS
 use MOM_CVMix_conv,          only : CVMix_conv_init, CVMix_conv_cs
@@ -33,7 +35,8 @@ use MOM_energetic_PBL,       only : energetic_PBL_end, energetic_PBL_CS
 use MOM_energetic_PBL,       only : energetic_PBL_get_MLD
 use MOM_entrain_diffusive,   only : entrainment_diffusive, entrain_diffusive_init
 use MOM_entrain_diffusive,   only : entrain_diffusive_CS
-use MOM_EOS,                 only : calculate_density, calculate_TFreeze, EOS_domain
+use MOM_EOS,                 only : calculate_density, calculate_density_derivs, calculate_TFreeze
+use MOM_EOS,                 only : calculate_specific_vol_derivs, EOS_domain
 use MOM_error_handler,       only : MOM_error, FATAL, WARNING, callTree_showQuery,MOM_mesg
 use MOM_error_handler,       only : callTree_enter, callTree_leave, callTree_waypoint
 use MOM_file_parser,         only : get_param, log_version, param_file_type, read_param
@@ -64,7 +67,7 @@ use MOM_set_diffusivity,     only : set_diffusivity_CS
 use MOM_sponge,              only : apply_sponge, sponge_CS
 use MOM_ALE_sponge,          only : apply_ALE_sponge, ALE_sponge_CS
 use MOM_time_manager,        only : time_type, real_to_time, operator(-), operator(<=)
-use MOM_tracer_flow_control, only : call_tracer_column_fns, tracer_flow_control_CS
+use MOM_tracer_flow_control, only : call_tracer_column_fns, tracer_flow_control_CS, extract_tracer_flow_member
 use MOM_tracer_diabatic,     only : tracer_vertdiff, tracer_vertdiff_Eulerian
 use MOM_unit_scaling,        only : unit_scale_type
 use MOM_variables,           only : thermo_var_ptrs, vertvisc_type, accel_diag_ptrs
@@ -149,7 +152,7 @@ type, public :: diabatic_CS ; private
                                      !! diffusivity of Kd_min_tr (see below) were operating.
   real    :: Kd_BBL_tr               !< A bottom boundary layer tracer diffusivity that
                                      !! will allow for explicitly specified bottom fluxes
-                                     !! [H2 T-1 ~> m2 s-1 or kg2 m-4 s-2].  The entrainment at the
+                                     !! [H2 T-1 ~> m2 s-1 or kg2 m-4 s-1].  The entrainment at the
                                      !! bottom is at least sqrt(Kd_BBL_tr*dt) over the same distance.
   real    :: Kd_min_tr               !< A minimal diffusivity that should always be
                                      !! applied to tracers, especially in massless layers
@@ -175,15 +178,29 @@ type, public :: diabatic_CS ; private
   real    :: dz_subML_N2             !< The distance over which to calculate a diagnostic of the
                                      !! average stratification at the base of the mixed layer [Z ~> m].
   real    :: MLD_En_vals(3)          !< Energy values for energy mixed layer diagnostics [R Z3 T-2 ~> J m-2]
+  real    :: BMLD_En_vals(3)         !< Energy values for energy bottom mixed layer diagnostics [R Z3 T-2 ~> J m-2]
+  logical :: use_OM4_MLD_En_iter     !< If true, uses an older iteration in the energetics MLD calculation to bitwise
+                                     !! reproduce OM4 era models
+  real    :: ref_h_mld = 0.0         !< The depth of the "surface"  density used in a difference mixed based
+                                     !! MLD calculation [Z ~> m].
+  logical :: Use_KdWork_diag = .false.  !< Logical flag to indicate if any Kd_work diagnostics are on.
+  logical :: Use_N2_diag = .false.   !< Logical flag to indicate if any N2 diagnostics are on.
+
+  ! MARBL needs T & S from before the tracer_vertdiff call
+  real, allocatable, dimension(:,:,:) :: prediabatic_T  !< Temperature prior to calling diabatic driver [C ~> degC]
+  real, allocatable, dimension(:,:,:) :: prediabatic_S  !< Salinity prior to calling diabatic driver [S ~> ppt]
 
   !>@{ Diagnostic IDs
   integer :: id_ea       = -1, id_eb       = -1 ! used by layer diabatic
   integer :: id_ea_t     = -1, id_eb_t     = -1, id_ea_s   = -1, id_eb_s     = -1
   integer :: id_Kd_heat  = -1, id_Kd_salt  = -1, id_Kd_int = -1, id_Kd_ePBL  = -1
   integer :: id_Tdif     = -1, id_Sdif     = -1, id_Tadv   = -1, id_Sadv     = -1
+  integer :: id_N2_dd    = -1, id_N2_salt_dd = -1, id_N2_temp_dd
   ! These are handles to diagnostics related to the mixed layer properties.
   integer :: id_MLD_003 = -1, id_MLD_0125 = -1, id_MLD_user = -1, id_mlotstsq = -1
+  integer :: id_MLD_003_zr = -1, id_MLD_003_rr = -1
   integer :: id_MLD_EN1 = -1, id_MLD_EN2  = -1, id_MLD_EN3  = -1, id_subMLN2  = -1
+  integer :: id_BMLD_EN1 = -1, id_BMLD_EN2  = -1, id_BMLD_EN3  = -1
 
   ! These are handles to diagnostics that are only available in non-ALE layered mode.
   integer :: id_wd       = -1
@@ -233,6 +250,8 @@ type, public :: diabatic_CS ; private
   type(diapyc_energy_req_CS),   pointer :: diapyc_en_rec_CSp     => NULL() !< Control structure for a child module
   type(oda_incupd_CS),          pointer :: oda_incupd_CSp        => NULL() !< Control structure for a child module
   type(int_tide_CS),            pointer :: int_tide_CSp          => NULL() !< Control structure for a child module
+  type(vbf_CS),                 pointer :: VBF                   => NULL() !< Control structure for a child module
+
 
   type(bulkmixedlayer_CS) :: bulkmixedlayer         !< Bulk mixed layer control structure
   type(CVMix_conv_CS) :: CVMix_conv                 !< CVMix convection control structure
@@ -479,19 +498,27 @@ subroutine diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, &
   call enable_averages(dt, Time_end, CS%diag)
   if (CS%id_MLD_003 > 0 .or. CS%id_subMLN2 > 0 .or. CS%id_mlotstsq > 0) then
     call diagnoseMLDbyDensityDifference(CS%id_MLD_003, h, tv, 0.03*US%kg_m3_to_R, G, GV, US, CS%diag, &
+                                        CS%ref_h_mld, CS%id_MLD_003_zr, CS%id_MLD_003_rr, &
                                         id_N2subML=CS%id_subMLN2, id_MLDsq=CS%id_mlotstsq, dz_subML=CS%dz_subML_N2)
   endif
   if (CS%id_MLD_0125 > 0) then
-    call diagnoseMLDbyDensityDifference(CS%id_MLD_0125, h, tv, 0.125*US%kg_m3_to_R, G, GV, US, CS%diag)
+    call diagnoseMLDbyDensityDifference(CS%id_MLD_0125, h, tv, 0.125*US%kg_m3_to_R, G, GV, US, CS%diag, &
+                                        ref_H_MLD=0.0, id_ref_z=-1, id_ref_rho=-1)
   endif
   if (CS%id_MLD_user > 0) then
-    call diagnoseMLDbyDensityDifference(CS%id_MLD_user, h, tv, CS%MLDdensityDifference, G, GV, US, CS%diag)
+    call diagnoseMLDbyDensityDifference(CS%id_MLD_user, h, tv, CS%MLDdensityDifference, G, GV, US, CS%diag, &
+                                        ref_H_MLD=0.0, id_ref_z=-1, id_ref_rho=-1)
   endif
   if ((CS%id_MLD_EN1 > 0) .or. (CS%id_MLD_EN2 > 0) .or. (CS%id_MLD_EN3 > 0)) then
-    call diagnoseMLDbyEnergy((/CS%id_MLD_EN1, CS%id_MLD_EN2, CS%id_MLD_EN3/),&
-                             h, tv, G, GV, US, CS%MLD_En_vals, CS%diag)
+    ! Surface Mixed Layer diagnostic
+    call diagnoseMLDbyEnergy((/CS%id_MLD_EN1, CS%id_MLD_EN2, CS%id_MLD_EN3/), h, tv, G, GV, US, CS%MLD_En_vals, &
+                             (/1,nz/), CS%diag, OM4_iteration=CS%use_OM4_MLD_En_iter)
   endif
-
+  if ((CS%id_BMLD_EN1 > 0) .or. (CS%id_BMLD_EN2 > 0) .or. (CS%id_BMLD_EN3 > 0)) then
+    ! Bottom Mixed Layer diagnostic
+    call diagnoseMLDbyEnergy((/CS%id_BMLD_EN1, CS%id_BMLD_EN2, CS%id_BMLD_EN3/), h, tv, G, GV, US, CS%BMLD_En_vals, &
+                             (/nz,1/), CS%diag, OM4_iteration=.false.)
+  endif
   if (stoch_CS%do_sppt .and. stoch_CS%id_sppt_wts > 0) &
     call post_data(stoch_CS%id_sppt_wts, stoch_CS%sppt_wts, CS%diag)
 
@@ -558,24 +585,40 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
     KPP_NLTscalar, & ! KPP non-local transport for scalars [nondim]
     KPP_buoy_flux, & ! KPP forcing buoyancy flux [L2 T-3 ~> m2 s-3]
     Tdif_flx, & ! diffusive diapycnal heat flux across interfaces [C H T-1 ~> degC m s-1 or degC kg m-2 s-1]
-    Sdif_flx    ! diffusive diapycnal salt flux across interfaces [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+    Sdif_flx, & ! diffusive diapycnal salt flux across interfaces [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+    N2_salt, &  !< Salinity contribution to squared buoyancy frequency at interfaces [T-2 ~> s-2]
+    N2_temp     !< Temperature contribution to squared buoyancy frequency at interfaces [T-2 ~> s-2]
 
   real, dimension(SZI_(G),SZJ_(G)) :: &
     U_star, &    ! The friction velocity [Z T-1 ~> m s-1].
     KPP_temp_flux, & ! KPP effective temperature flux [C H T-1 ~> degC m s-1 or degC kg m-2 s-1]
     KPP_salt_flux, & ! KPP effective salt flux [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
-    SkinBuoyFlux ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
+    SkinBuoyFlux, &  ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
+    BBL_BuoyFlux     ! 2d bottom buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
+
+  real, dimension(SZI_(G)) :: &
+    p_i ,&      ! Pressure at the interface [R L2 T-2 ~> Pa]
+    d_pres, &   ! pressure change across a layer [R L2 T-2 ~> Pa]
+    T_i, &      ! Temperature at the interface [C ~> degC]
+    S_i, &      ! Salinity at the interface [S ~> ppt]
+    drhodS, &   ! Local change in density w.r.t. salinity using model EOS & state [R C-1 ~> kg m-3 ppt-1]
+    drhodT, &   ! Local change in density w.r.t. temperature using model EOS & state [R C-1 ~> kg m-3 degC-1]
+    dSpV_dT, &  ! Partial derivative of specific volume with temperature [R-1 C-1 ~> m3 kg-1 degC-1]
+    dSpV_dS     ! Partial derivative of specific volume with salinity [R-1 S-1 ~> m3 kg-1 ppt-1]
 
   logical, dimension(SZI_(G)) :: &
     in_boundary  ! True if there are no massive layers below, where massive is defined as
                  ! sufficiently thick that the no-flux boundary conditions have not restricted
                  ! the entrainment - usually sqrt(Kd*dt).
 
+  real :: h_neglect    ! A thickness that is so small it is usually lost
+                       ! in roundoff and can be neglected [H ~> m or kg m-2]
   real :: dz_neglect   ! A vertical distance that is so small it is usually lost
                        ! in roundoff and can be neglected [Z ~> m]
   real :: dz_neglect2  ! dz_neglect^2 [Z2 ~> m2]
   real :: add_ent      ! Entrainment that needs to be added when mixing tracers [H ~> m or kg m-2]
   real :: I_dzval      ! The inverse of the thicknesses averaged to interfaces [Z-1 ~> m-1]
+  real :: I_h          ! The inverse of the thicknesses averaged to interfaces [H-1 ~> m-1 or m2 kg-1]
   real :: Tr_ea_BBL    ! The diffusive tracer thickness in the BBL that is
                        ! coupled to the bottom within a timestep [H ~> m or kg m-2]
   real :: Kd_add_here    ! An added diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1].
@@ -583,6 +626,12 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
 
   real :: Ent_int ! The diffusive entrainment rate at an interface [H ~> m or kg m-2]
   real :: Idt     ! The inverse time step [T-1 ~> s-1]
+  real :: g_Rho0       ! G_Earth/Rho0 [H T-2 R-1 ~> m4 s-2 kg-1 or m s-2]
+  real :: H_to_pres    ! A conversion factor from thicknesses to pressure [R L2 T-2 H-1 ~> Pa m-1 or Pa m2 kg-1]
+  real :: alt_H_to_pres! A conversion factor from thicknesses to pressure w/ alternative scaling [R Z T-2 ~> Pa m-1]
+  logical :: nonBous   ! True if not using the Boussinesq approximation
+
+  integer, dimension(2) :: EOSdom ! The i-computational domain for the equation of state
 
   logical :: showCallTree ! If true, show the call tree
   integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
@@ -590,18 +639,42 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
   is   = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = GV%ke
   Isq  = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
   dz_neglect = GV%dZ_subroundoff ; dz_neglect2 = dz_neglect*dz_neglect
+  h_neglect = GV%H_subroundoff
+
+  nonBous = .not.(GV%Boussinesq .or. GV%semi_Boussinesq)
+  g_Rho0  = GV%g_Earth_Z_T2 / GV%H_to_RZ
+  H_to_pres = GV%H_to_RZ * GV%g_Earth
+  alt_H_to_pres = H_to_pres * US%L_to_Z**2 * GV%Z_to_H
 
   Kd_heat(:,:,:) = 0.0 ; Kd_salt(:,:,:) = 0.0
 
   showCallTree = callTree_showQuery()
   if (showCallTree) call callTree_enter("diabatic_ALE_legacy(), MOM_diabatic_driver.F90")
 
+  ! Some tracer packages require T & S from the beginning of the diabatic step to
+  ! provide forcing consistent with the passive tracer values. The initialization
+  ! routine will allocate prediabatic_T and prediabatic_S if the tracer flow control
+  ! structure indicates it is necessary. If these arrays are allocated, they will store
+  ! a copy of tv%T & tv%S before this subroutine modifies the tv structure.
+  if (allocated(CS%prediabatic_T)) then
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      CS%prediabatic_T(i,j,k) = tv%T(i,j,k)
+    enddo ; enddo ; enddo
+  endif
+  if (allocated(CS%prediabatic_S)) then
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      CS%prediabatic_S(i,j,k) = tv%S(i,j,k)
+    enddo ; enddo ; enddo
+  endif
+
   ! For all other diabatic subroutines, the averaging window should be the entire diabatic timestep
   call enable_averages(dt, Time_end, CS%diag)
 
+  if (CS%Use_KdWork_diag) call Allocate_VBF_CS(G, GV, CS%VBF)
+
   if (CS%use_geothermal) then
     call cpu_clock_begin(id_clock_geothermal)
-    call geothermal_in_place(h, tv, dt, G, GV, US, CS%geothermal, halo=CS%halo_TS_diff)
+    call geothermal_in_place(h, tv, dt, G, GV, US, CS%geothermal, BBL_BuoyFlux, halo=CS%halo_TS_diff)
     call cpu_clock_end(id_clock_geothermal)
     if (showCallTree) call callTree_waypoint("geothermal (diabatic)")
     if (CS%debugConservation) call MOM_state_stats('geothermal', u, v, h, tv%T, tv%S, G, GV, US)
@@ -635,10 +708,10 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
     call MOM_state_chksum("before set_diffusivity", u, v, h, G, GV, US, haloshift=CS%halo_TS_diff)
   if (CS%double_diffuse) then
     call set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, CS%optics, visc, dt, Kd_int, G, GV, US, &
-                         CS%set_diff_CSp, Kd_extra_T=Kd_extra_T, Kd_extra_S=Kd_extra_S)
+                         CS%set_diff_CSp, CS%VBF, Kd_extra_T=Kd_extra_T, Kd_extra_S=Kd_extra_S)
   else
     call set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, CS%optics, visc, dt, Kd_int, G, GV, US, &
-                         CS%set_diff_CSp)
+                         CS%set_diff_CSp, CS%VBF)
   endif
   call cpu_clock_end(id_clock_set_diffusivity)
   if (showCallTree) call callTree_waypoint("done with set_diffusivity (diabatic)")
@@ -648,7 +721,7 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
     call MOM_state_chksum("after set_diffusivity ", u, v, h, G, GV, US, haloshift=0)
     call MOM_forcing_chksum("after set_diffusivity ", fluxes, G, US, haloshift=0)
     call MOM_thermovar_chksum("after set_diffusivity ", tv, G, US)
-    call hchksum(Kd_Int, "after set_diffusivity Kd_Int", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
+    call hchksum(Kd_Int, "after set_diffusivity Kd_Int", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
   endif
 
   ! Set diffusivities for heat and salt separately
@@ -669,8 +742,8 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
     endif
 
     if (CS%debug) then
-      call hchksum(Kd_heat, "after set_diffusivity Kd_heat", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
-      call hchksum(Kd_salt, "after set_diffusivity Kd_salt", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
+      call hchksum(Kd_heat, "after set_diffusivity Kd_heat", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
+      call hchksum(Kd_salt, "after set_diffusivity Kd_salt", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
     endif
 
     call cpu_clock_begin(id_clock_kpp)
@@ -735,12 +808,12 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
       call MOM_state_chksum("after KPP", u, v, h, G, GV, US, haloshift=0)
       call MOM_forcing_chksum("after KPP", fluxes, G, US, haloshift=0)
       call MOM_thermovar_chksum("after KPP", tv, G, US)
-      call hchksum(Kd_heat, "after KPP Kd_heat", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
-      call hchksum(Kd_salt, "after KPP Kd_salt", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
+      call hchksum(Kd_heat, "after KPP Kd_heat", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
+      call hchksum(Kd_salt, "after KPP Kd_salt", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
       call hchksum(KPP_temp_flux, "before KPP_applyNLT netHeat", G%HI, haloshift=0, &
-                   scale=US%C_to_degC*GV%H_to_m*US%s_to_T)
+                   unscale=US%C_to_degC*GV%H_to_m*US%s_to_T)
       call hchksum(KPP_salt_flux, "before KPP_applyNLT netSalt", G%HI, haloshift=0, &
-                   scale=US%S_to_ppt*GV%H_to_m*US%s_to_T)
+                   unscale=US%S_to_ppt*GV%H_to_m*US%s_to_T)
       call hchksum(KPP_NLTheat, "before KPP_applyNLT NLTheat", G%HI, haloshift=0)
       call hchksum(KPP_NLTscalar, "before KPP_applyNLT NLTscalar", G%HI, haloshift=0)
     endif
@@ -810,7 +883,7 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
     call MOM_forcing_chksum("after calc_entrain ", fluxes, G, US, haloshift=0)
     call MOM_thermovar_chksum("after calc_entrain ", tv, G, US)
     call MOM_state_chksum("after calc_entrain ", u, v, h, G, GV, US, haloshift=0)
-    call hchksum(ent_s, "after calc_entrain ent_s", G%HI, haloshift=0, scale=GV%H_to_MKS)
+    call hchksum(ent_s, "after calc_entrain ent_s", G%HI, haloshift=0, unscale=GV%H_to_MKS)
   endif
 
   ! Save fields before boundary forcing is applied for tendency diagnostics
@@ -836,24 +909,24 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
             CS%minimum_forcing_depth, cTKE, dSV_dT, dSV_dS, SkinBuoyFlux=SkinBuoyFlux, MLD_h=visc%h_ML)
 
     if (CS%debug) then
-      call hchksum(ent_t, "after applyBoundaryFluxes ent_t", G%HI, haloshift=0, scale=GV%H_to_mks)
-      call hchksum(ent_s, "after applyBoundaryFluxes ent_s", G%HI, haloshift=0, scale=GV%H_to_mks)
+      call hchksum(ent_t, "after applyBoundaryFluxes ent_t", G%HI, haloshift=0, unscale=GV%H_to_mks)
+      call hchksum(ent_s, "after applyBoundaryFluxes ent_s", G%HI, haloshift=0, unscale=GV%H_to_mks)
       call hchksum(cTKE, "after applyBoundaryFluxes cTKE", G%HI, haloshift=0, &
-                   scale=US%RZ3_T3_to_W_m2*US%T_to_s)
+                   unscale=US%RZ3_T3_to_W_m2*US%T_to_s)
       call hchksum(dSV_dT, "after applyBoundaryFluxes dSV_dT", G%HI, haloshift=0, &
-                   scale=US%kg_m3_to_R*US%degC_to_C)
+                   unscale=US%kg_m3_to_R*US%degC_to_C)
       call hchksum(dSV_dS, "after applyBoundaryFluxes dSV_dS", G%HI, haloshift=0, &
-                   scale=US%kg_m3_to_R*US%ppt_to_S)
-      call hchksum(h, "after applyBoundaryFluxes h", G%HI, haloshift=0, scale=GV%H_to_mks)
-      call hchksum(tv%T, "after applyBoundaryFluxes tv%T", G%HI, haloshift=0, scale=US%C_to_degC)
-      call hchksum(tv%S, "after applyBoundaryFluxes tv%S", G%HI, haloshift=0, scale=US%S_to_ppt)
+                   unscale=US%kg_m3_to_R*US%ppt_to_S)
+      call hchksum(h, "after applyBoundaryFluxes h", G%HI, haloshift=0, unscale=GV%H_to_mks)
+      call hchksum(tv%T, "after applyBoundaryFluxes tv%T", G%HI, haloshift=0, unscale=US%C_to_degC)
+      call hchksum(tv%S, "after applyBoundaryFluxes tv%S", G%HI, haloshift=0, unscale=US%S_to_ppt)
       call hchksum(SkinBuoyFlux, "after applyBdryFlux SkinBuoyFlux", G%HI, haloshift=0, &
-                   scale=US%Z_to_m**2*US%s_to_T**3)
+                   unscale=US%Z_to_m**2*US%s_to_T**3)
     endif
 
     call find_uv_at_h(u, v, h, u_h, v_h, G, GV, US)
-    call energetic_PBL(h, u_h, v_h, tv, fluxes, dt, Kd_ePBL, G, GV, US, &
-                       CS%ePBL, stoch_CS, dSV_dT, dSV_dS, cTKE, SkinBuoyFlux, waves=waves)
+    call energetic_PBL(h, u_h, v_h, tv, fluxes, visc, dt, Kd_ePBL, G, GV, US, &
+                       CS%ePBL, stoch_CS, dSV_dT, dSV_dS, cTKE, SkinBuoyFlux, BBL_BuoyFlux, waves=waves)
 
     call energetic_PBL_get_MLD(CS%ePBL, BLD(:,:), G, US)
     ! If visc%MLD or visc%h_ML exist, copy ePBL's BLD into them with appropriate conversions.
@@ -885,9 +958,9 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
     enddo ; enddo ; enddo
 
     if (CS%debug) then
-      call hchksum(ent_t, "after ePBL ent_t", G%HI, haloshift=0, scale=GV%H_to_MKS)
-      call hchksum(ent_s, "after ePBL ent_s", G%HI, haloshift=0, scale=GV%H_to_MKS)
-      call hchksum(Kd_ePBL, "after ePBL Kd_ePBL", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
+      call hchksum(ent_t, "after ePBL ent_t", G%HI, haloshift=0, unscale=GV%H_to_MKS)
+      call hchksum(ent_s, "after ePBL ent_s", G%HI, haloshift=0, unscale=GV%H_to_MKS)
+      call hchksum(Kd_ePBL, "after ePBL Kd_ePBL", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
     endif
 
   else
@@ -930,8 +1003,8 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
   if (associated(tv%T)) then
 
     if (CS%debug) then
-      call hchksum(ent_t, "before triDiagTS ent_t ", G%HI, haloshift=0, scale=GV%H_to_MKS)
-      call hchksum(ent_s, "before triDiagTS ent_s ", G%HI, haloshift=0, scale=GV%H_to_MKS)
+      call hchksum(ent_t, "before triDiagTS ent_t ", G%HI, haloshift=0, unscale=GV%H_to_MKS)
+      call hchksum(ent_s, "before triDiagTS ent_s ", G%HI, haloshift=0, unscale=GV%H_to_MKS)
     endif
 
     call cpu_clock_begin(id_clock_tridiag)
@@ -985,6 +1058,12 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
   ! target grids for vertical remapping may need to be regenerated.
   call diag_update_remap_grids(CS%diag)
 
+  ! Set diffusivities for VBF diagnostics if enabled
+  if (CS%use_energetic_PBL .and. associated(CS%VBF%Kd_ePBL)) CS%VBF%Kd_ePBL(:,:,:) = Kd_ePBL(:,:,:)
+  if (associated(CS%VBF%Kd_salt)) CS%VBF%Kd_temp(:,:,:) = Kd_heat(:,:,:)
+  if (associated(CS%VBF%Kd_temp)) CS%VBF%Kd_salt(:,:,:) = Kd_salt(:,:,:)
+
+
   ! Diagnose the diapycnal diffusivities and other related quantities.
   if (CS%id_Kd_int  > 0) call post_data(CS%id_Kd_int,  Kd_int,  CS%diag)
   if (CS%id_Kd_heat > 0) call post_data(CS%id_Kd_heat, Kd_heat, CS%diag)
@@ -1017,6 +1096,68 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
       Sdif_flx(i,j,K) = (Idt * ent_s(i,j,K)) * (tv%S(i,j,k-1) - tv%S(i,j,k))
     enddo ; enddo ; enddo
     if (CS%id_Sdif > 0) call post_data(CS%id_Sdif, Sdif_flx, CS%diag)
+  endif
+
+  if (CS%Use_KdWork_diag .or. CS%Use_N2_diag) then
+    N2_salt(:,:,:) = 0.0
+    N2_temp(:,:,:) = 0.0
+    !Compute N2 and don't mask negatives here
+    EOSdom(:) = EOS_domain(G%HI)
+    if (nonBous) then
+      !$OMP parallel do default(shared)
+      do j=js,je
+        if (associated(tv%p_surf)) then
+          do i=is,ie ; p_i(i) = tv%p_surf(i,j) ; enddo
+        else
+          do i=is,ie ; p_i(i) = 0.0 ; enddo
+        endif
+        do K=2,nz
+          do i=is,ie
+            p_i(i) = p_i(i) + H_to_pres * h(i,j,k-1)
+          enddo
+          T_i = 0.5*(tv%T(:,j,k-1)+tv%T(:,j,k))
+          S_i = 0.5*(tv%S(:,j,k-1)+tv%S(:,j,k))
+          call calculate_specific_vol_derivs(T_i, S_i, p_i, dSpV_dT, dSpV_dS, tv%eqn_of_state, EOSdom)
+          do i=is,ie
+            I_dzval = 1.0 / (dz_neglect + 0.5*(dz(i,j,k-1) + dz(i,j,k)))
+            N2_salt(i,j,K) = (tv%S(i,j,k-1) - tv%S(i,j,k)) * (dSpv_dS(i) * (alt_H_to_pres * I_dzval))
+            N2_temp(i,j,K) = (tv%T(i,j,k-1) - tv%T(i,j,k)) * (dSpV_dT(i) * (alt_H_to_pres * I_dzval))
+          enddo
+        enddo
+      enddo
+    else
+      !$OMP parallel do default(shared)
+      do j=js,je
+        if (associated(tv%p_surf)) then
+          do i=is,ie ; p_i(i) = tv%p_surf(i,j) ; enddo
+        else
+          do i=is,ie ; p_i(i) = 0.0 ; enddo
+        endif
+        do K=2,nz
+          do i=is,ie
+            p_i(i) = p_i(i) + H_to_pres* h(i,j,k-1)
+          enddo
+          T_i = 0.5*(tv%T(:,j,k-1)+tv%T(:,j,k))
+          S_i = 0.5*(tv%S(:,j,k-1)+tv%S(:,j,k))
+          call calculate_density_derivs(T_i, S_i, p_i, dRhodT, dRhodS, tv%eqn_of_state, EOSdom)
+          do i=is,ie
+            I_h = 1.0 / (h_neglect + 0.5*(h(i,j,k-1) + h(i,j,k)))
+            N2_salt(i,j,K) = -(tv%S(i,j,k-1) - tv%S(i,j,k)) * (dRhodS(i) * (g_rho0 * I_h))
+            N2_temp(i,j,K) = -(tv%T(i,j,k-1) - tv%T(i,j,k)) * (dRhodT(i) * (g_rho0 * I_h))
+          enddo
+        enddo
+      enddo
+    endif
+    if (CS%id_N2_dd>0)      call post_data(CS%id_N2_dd, N2_salt(:,:,:)+N2_temp(:,:,:), CS%diag)
+    if (CS%id_N2_salt_dd>0) call post_data(CS%id_N2_salt_dd, N2_salt, CS%diag)
+    if (CS%id_N2_temp_dd>0) call post_data(CS%id_N2_temp_dd, N2_temp, CS%diag)
+
+    if (CS%Use_KdWork_diag) then
+       call KdWork_diagnostics(G,GV,US,CS%diag,CS%VBF,N2_salt,N2_temp,dz)
+    endif
+
+    call deallocate_VBF_CS(CS%VBF)
+
   endif
 
   ! mixing of passive tracers from massless boundary layers to interior
@@ -1081,7 +1222,8 @@ subroutine diabatic_ALE_legacy(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Tim
                               KPP_CSp=CS%KPP_CSp, &
                               nonLocalTrans=KPP_NLTscalar, &
                               evap_CFL_limit=CS%evap_CFL_limit, &
-                              minimum_forcing_depth=CS%minimum_forcing_depth, h_BL=visc%h_ML)
+                              minimum_forcing_depth=CS%minimum_forcing_depth, h_BL=visc%h_ML, &
+                              prediabatic_T=CS%prediabatic_T, prediabatic_S=CS%prediabatic_S)
 
   call cpu_clock_end(id_clock_tracers)
 
@@ -1173,35 +1315,65 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
     KPP_NLTscalar, & ! KPP non-local transport for scalars [nondim]
     KPP_buoy_flux, & ! KPP forcing buoyancy flux [L2 T-3 ~> m2 s-3]
     Tdif_flx, & ! diffusive diapycnal heat flux across interfaces [C H T-1 ~> degC m s-1 or degC kg m-2 s-1]
-    Sdif_flx    ! diffusive diapycnal salt flux across interfaces [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+    Sdif_flx, & ! diffusive diapycnal salt flux across interfaces [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
+    N2_salt, &  !< Salinity contribution to squared buoyancy frequency at interfaces [T-2 ~> s-2]
+    N2_temp     !< Temperature contribution to squared buoyancy frequency at interfaces [T-2 ~> s-2]
 
   real, dimension(SZI_(G),SZJ_(G)) :: &
     U_star, &    ! The friction velocity [Z T-1 ~> m s-1].
     KPP_temp_flux, & ! KPP effective temperature flux [C H T-1 ~> degC m s-1 or degC kg m-2 s-1]
     KPP_salt_flux, & ! KPP effective salt flux [S H T-1 ~> ppt m s-1 or ppt kg m-2 s-1]
-    SkinBuoyFlux ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
+    SkinBuoyFlux, &  ! 2d surface buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
+    BBL_BuoyFlux     ! 2d bottom buoyancy flux [Z2 T-3 ~> m2 s-3], used by ePBL
 
   logical, dimension(SZI_(G)) :: &
     in_boundary  ! True if there are no massive layers below, where massive is defined as
                  ! sufficiently thick that the no-flux boundary conditions have not restricted
                  ! the entrainment - usually sqrt(Kd*dt).
+
+  real, dimension(SZI_(G)) :: &
+    p_i ,&      ! Pressure at the interface [R L2 T-2 ~> Pa]
+    d_pres, &   ! pressure change across a layer [R L2 T-2 ~> Pa]
+    T_i, &      ! Temperature at the interface [C ~> degC]
+    S_i, &      ! Salinity at the interface [S ~> ppt]
+    drhodS, &   ! Local change in density w.r.t. salinity using model EOS & state [R C-1 ~> kg m-3 ppt-1]
+    drhodT, &   ! Local change in density w.r.t. temperature using model EOS & state [R C-1 ~> kg m-3 degC-1]
+    dSpV_dT, &  ! Partial derivative of specific volume with temperature [R-1 C-1 ~> m3 kg-1 degC-1]
+    dSpV_dS     ! Partial derivative of specific volume with salinity [R-1 S-1 ~> m3 kg-1 ppt-1]
+
+  real :: h_neglect    ! A thickness that is so small it is usually lost
+                       ! in roundoff and can be neglected [H ~> m or kg m-2]
   real :: dz_neglect   ! A vertical distance that is so small it is usually lost
                        ! in roundoff and can be neglected [Z ~> m]
   real :: dz_neglect2  ! dz_neglect^2 [Z2 ~> m2]
   real :: add_ent      ! Entrainment that needs to be added when mixing tracers [H ~> m or kg m-2]
   real :: I_dzval      ! The inverse of the thicknesses averaged to interfaces [Z-1 ~> m-1]
+  real :: I_h          ! The inverse of the thicknesses averaged to interfaces [H-1 ~> m-1 or m2 kg-1]
   real :: Tr_ea_BBL    ! The diffusive tracer thickness in the BBL that is
                        ! coupled to the bottom within a timestep [H ~> m or kg m-2]
   real :: htot(SZIB_(G)) ! The summed thickness from the bottom [H ~> m or kg m-2].
   real :: Kd_add_here    ! An added diffusivity [H Z T-1 ~> m2 s-1 or kg m-1 s-1].
-  real :: Idt     ! The inverse time step [T-1 ~> s-1]
+  real :: Idt          ! The inverse time step [T-1 ~> s-1]
+  real :: g_Rho0       ! G_Earth/Rho0 [H T-2 R-1 ~> m4 s-2 kg-1 or m s-2]
+  real :: H_to_pres    ! A conversion factor from thicknesses to pressure [R L2 T-2 H-1 ~> Pa m-1 or Pa m2 kg-1]
+  real :: alt_H_to_pres! A conversion factor from thicknesses to pressure w/ alternative scaling [R Z T-2 ~> Pa m-1]
+  logical :: nonBous   ! True if not using the Boussinesq approximation
+
+  integer, dimension(2) :: EOSdom ! The i-computational domain for the equation of state
 
   logical :: showCallTree ! If true, show the call tree
-  integer :: i, j, k, is, ie, js, je, Isq, Ieq, Jsq, Jeq, nz
+  integer :: i, j, k, is, ie, js, je, isd, ied, jsd, jed, Isq, Ieq, Jsq, Jeq, nz
 
   is   = G%isc  ; ie  = G%iec  ; js  = G%jsc  ; je  = G%jec ; nz = GV%ke
+  isd  = G%isd  ; ied = G%ied  ; jsd = G%jsd  ; jed = G%jed
   Isq  = G%IscB ; Ieq = G%IecB ; Jsq = G%JscB ; Jeq = G%JecB
   dz_neglect = GV%dZ_subroundoff ; dz_neglect2 = dz_neglect*dz_neglect
+  h_neglect = GV%H_subroundoff
+
+  nonBous = .not.(GV%Boussinesq .or. GV%semi_Boussinesq)
+  g_Rho0  = GV%g_Earth_Z_T2 / GV%H_to_RZ
+  H_to_pres = GV%H_to_RZ * GV%g_Earth
+  alt_H_to_pres = H_to_pres * US%L_to_Z**2 * GV%Z_to_H
 
   Kd_heat(:,:,:) = 0.0 ; Kd_salt(:,:,:) = 0.0
   ent_s(:,:,:) = 0.0 ; ent_t(:,:,:) = 0.0
@@ -1212,12 +1384,30 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
   if (.not. (CS%useALEalgorithm)) call MOM_error(FATAL, "MOM_diabatic_driver: "// &
          "The ALE algorithm must be enabled when using MOM_diabatic_driver.")
 
+  ! Some tracer packages require T & S from the beginning of the diabatic step to
+  ! provide forcing consistent with the passive tracer values. The initialization
+  ! routine will allocate prediabatic_T and prediabatic_S if the tracer flow control
+  ! structure indicates it is necessary. If these arrays are allocated, they will store
+  ! a copy of tv%T & tv%S before this subroutine modifies the tv structure.
+  if (allocated(CS%prediabatic_T)) then
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      CS%prediabatic_T(i,j,k) = tv%T(i,j,k)
+    enddo ; enddo ; enddo
+  endif
+  if (allocated(CS%prediabatic_S)) then
+    do k=1,nz ; do j=js,je ; do i=is,ie
+      CS%prediabatic_S(i,j,k) = tv%S(i,j,k)
+    enddo ; enddo ; enddo
+  endif
+
   ! For all other diabatic subroutines, the averaging window should be the entire diabatic timestep
   call enable_averages(dt, Time_end, CS%diag)
 
+  if (CS%Use_KdWork_diag) call Allocate_VBF_CS(G, GV, CS%VBF)
+
   if (CS%use_geothermal) then
     call cpu_clock_begin(id_clock_geothermal)
-    call geothermal_in_place(h, tv, dt, G, GV, US, CS%geothermal, halo=CS%halo_TS_diff)
+    call geothermal_in_place(h, tv, dt, G, GV, US, CS%geothermal, BBL_buoyflux, halo=CS%halo_TS_diff)
     call cpu_clock_end(id_clock_geothermal)
     if (showCallTree) call callTree_waypoint("geothermal (diabatic)")
     if (CS%debugConservation) call MOM_state_stats('geothermal', u, v, h, tv%T, tv%S, G, GV, US)
@@ -1251,10 +1441,10 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
     call MOM_state_chksum("before set_diffusivity", u, v, h, G, GV, US, haloshift=CS%halo_TS_diff)
   if (CS%double_diffuse) then
     call set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, CS%optics, visc, dt, Kd_heat, G, GV, US, &
-                         CS%set_diff_CSp, Kd_extra_T=Kd_extra_T, Kd_extra_S=Kd_extra_S)
+                         CS%set_diff_CSp, CS%VBF, Kd_extra_T=Kd_extra_T, Kd_extra_S=Kd_extra_S)
   else
     call set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, CS%optics, visc, dt, Kd_heat, G, GV, US, &
-                         CS%set_diff_CSp)
+                         CS%set_diff_CSp, CS%VBF)
   endif
   call cpu_clock_end(id_clock_set_diffusivity)
   if (showCallTree) call callTree_waypoint("done with set_diffusivity (diabatic)")
@@ -1263,11 +1453,8 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
     call MOM_state_chksum("after set_diffusivity ", u, v, h, G, GV, US, haloshift=0)
     call MOM_forcing_chksum("after set_diffusivity ", fluxes, G, US, haloshift=0)
     call MOM_thermovar_chksum("after set_diffusivity ", tv, G, US)
-    call hchksum(Kd_heat, "after set_diffusivity Kd_heat", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
+    call hchksum(Kd_heat, "after set_diffusivity Kd_heat", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
   endif
-
-  ! Store the diagnosed typical diffusivity at interfaces.
-  if (CS%id_Kd_int > 0) call post_data(CS%id_Kd_int, Kd_heat,  CS%diag)
 
   ! Set diffusivities for heat and salt separately, and possibly change the meaning of Kd_heat.
   if (CS%double_diffuse) then
@@ -1285,8 +1472,8 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
   endif
 
   if (CS%debug) then
-    call hchksum(Kd_heat, "after double diffuse Kd_heat", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
-    call hchksum(Kd_salt, "after double diffuse Kd_salt", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
+    call hchksum(Kd_heat, "after double diffuse Kd_heat", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
+    call hchksum(Kd_salt, "after double diffuse Kd_salt", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
   endif
 
   if (CS%useKPP) then
@@ -1334,19 +1521,19 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
     ! If visc%MLD or visc%h_ML exist, copy KPP's BLD into them with appropriate conversions.
     if (associated(visc%h_ML)) call convert_MLD_to_ML_thickness(BLD, h, visc%h_ML, tv, G, GV)
     if (associated(visc%MLD)) visc%MLD(:,:) = BLD(:,:)
-    if (associated(visc%sfc_buoy_flx)) visc%sfc_buoy_flx(:,:) = KPP_buoy_flux(:,:,1)
+    if (associated(visc%sfc_buoy_flx)) visc%sfc_buoy_flx(:,:) = KPP_buoy_flux(:,:,1) * US%L_to_Z**2
 
     if (showCallTree) call callTree_waypoint("done with KPP_calculate (diabatic)")
     if (CS%debug) then
       call MOM_state_chksum("after KPP", u, v, h, G, GV, US, haloshift=0)
       call MOM_forcing_chksum("after KPP", fluxes, G, US, haloshift=0)
       call MOM_thermovar_chksum("after KPP", tv, G, US)
-      call hchksum(Kd_heat, "after KPP Kd_heat", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
-      call hchksum(Kd_salt, "after KPP Kd_salt", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
+      call hchksum(Kd_heat, "after KPP Kd_heat", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
+      call hchksum(Kd_salt, "after KPP Kd_salt", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
       call hchksum(KPP_temp_flux, "before KPP_applyNLT netHeat", G%HI, haloshift=0, &
-                   scale=US%C_to_degC*GV%H_to_m*US%s_to_T)
+                   unscale=US%C_to_degC*GV%H_to_m*US%s_to_T)
       call hchksum(KPP_salt_flux, "before KPP_applyNLT netSalt", G%HI, haloshift=0, &
-                   scale=US%S_to_ppt*GV%H_to_m*US%s_to_T)
+                   unscale=US%S_to_ppt*GV%H_to_m*US%s_to_T)
       call hchksum(KPP_NLTheat, "before KPP_applyNLT NLTheat", G%HI, haloshift=0)
       call hchksum(KPP_NLTscalar, "before KPP_applyNLT NLTscalar", G%HI, haloshift=0)
     endif
@@ -1396,19 +1583,19 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
             CS%minimum_forcing_depth, cTKE, dSV_dT, dSV_dS, SkinBuoyFlux=SkinBuoyFlux, MLD_h=visc%h_ML)
 
     if (CS%debug) then
-      call hchksum(ent_t, "after applyBoundaryFluxes ent_t", G%HI, haloshift=0, scale=GV%H_to_MKS)
-      call hchksum(ent_s, "after applyBoundaryFluxes ent_s", G%HI, haloshift=0, scale=GV%H_to_MKS)
+      call hchksum(ent_t, "after applyBoundaryFluxes ent_t", G%HI, haloshift=0, unscale=GV%H_to_MKS)
+      call hchksum(ent_s, "after applyBoundaryFluxes ent_s", G%HI, haloshift=0, unscale=GV%H_to_MKS)
       call hchksum(cTKE, "after applyBoundaryFluxes cTKE", G%HI, haloshift=0, &
-                   scale=US%RZ3_T3_to_W_m2*US%T_to_s)
+                   unscale=US%RZ3_T3_to_W_m2*US%T_to_s)
       call hchksum(dSV_dT, "after applyBoundaryFluxes dSV_dT", G%HI, haloshift=0, &
-                   scale=US%kg_m3_to_R*US%degC_to_C)
+                   unscale=US%kg_m3_to_R*US%degC_to_C)
       call hchksum(dSV_dS, "after applyBoundaryFluxes dSV_dS", G%HI, haloshift=0, &
-                   scale=US%kg_m3_to_R*US%ppt_to_S)
+                   unscale=US%kg_m3_to_R*US%ppt_to_S)
     endif
 
     call find_uv_at_h(u, v, h, u_h, v_h, G, GV, US)
-    call energetic_PBL(h, u_h, v_h, tv, fluxes, dt, Kd_ePBL, G, GV, US, &
-                       CS%ePBL, stoch_CS, dSV_dT, dSV_dS, cTKE, SkinBuoyFlux, waves=waves)
+    call energetic_PBL(h, u_h, v_h, tv, fluxes, visc, dt, Kd_ePBL, G, GV, US, &
+                       CS%ePBL, stoch_CS, dSV_dT, dSV_dS, cTKE, SkinBuoyFlux, BBL_BuoyFlux, waves=waves)
 
     call energetic_PBL_get_MLD(CS%ePBL, BLD(:,:), G, US)
     ! If visc%MLD or visc%h_ML exist, copy ePBL's BLD into them with appropriate conversions.
@@ -1431,9 +1618,9 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
     enddo ; enddo ; enddo
 
     if (CS%debug) then
-      call hchksum(ent_t, "after ePBL ent_t", G%HI, haloshift=0, scale=GV%H_to_MKS)
-      call hchksum(ent_s, "after ePBL ent_s", G%HI, haloshift=0, scale=GV%H_to_MKS)
-      call hchksum(Kd_ePBL, "after ePBL Kd_ePBL", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
+      call hchksum(ent_t, "after ePBL ent_t", G%HI, haloshift=0, unscale=GV%H_to_MKS)
+      call hchksum(ent_s, "after ePBL ent_s", G%HI, haloshift=0, unscale=GV%H_to_MKS)
+      call hchksum(Kd_ePBL, "after ePBL Kd_ePBL", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
     endif
 
   else
@@ -1468,8 +1655,8 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
   if (associated(tv%T)) then
 
     if (CS%debug) then
-      call hchksum(ent_t, "before triDiagTS ent_t ", G%HI, haloshift=0, scale=GV%H_to_MKS)
-      call hchksum(ent_s, "before triDiagTS ent_s ", G%HI, haloshift=0, scale=GV%H_to_MKS)
+      call hchksum(ent_t, "before triDiagTS ent_t ", G%HI, haloshift=0, unscale=GV%H_to_MKS)
+      call hchksum(ent_s, "before triDiagTS ent_s ", G%HI, haloshift=0, unscale=GV%H_to_MKS)
     endif
 
     call cpu_clock_begin(id_clock_tridiag)
@@ -1532,10 +1719,24 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
   ! target grids for vertical remapping may need to be regenerated.
   call diag_update_remap_grids(CS%diag)
 
+  ! Set diffusivities for VBF diagnostics if enabled
+  if (CS%use_energetic_PBL .and. associated(CS%VBF%Kd_ePBL)) CS%VBF%Kd_ePBL(:,:,:) = Kd_ePBL(:,:,:)
+  if (associated(CS%VBF%Kd_salt)) CS%VBF%Kd_temp(:,:,:) = Kd_heat(:,:,:)
+  if (associated(CS%VBF%Kd_temp)) CS%VBF%Kd_salt(:,:,:) = Kd_salt(:,:,:)
+
   ! Diagnose the diapycnal diffusivities and other related quantities.
   if (CS%id_Kd_heat > 0) call post_data(CS%id_Kd_heat, Kd_heat, CS%diag)
   if (CS%id_Kd_salt > 0) call post_data(CS%id_Kd_salt, Kd_salt, CS%diag)
   if (CS%id_Kd_ePBL > 0) call post_data(CS%id_Kd_ePBL, Kd_ePBL, CS%diag)
+  if (CS%id_Kd_int > 0) then
+    if (CS%double_diffuse .or. CS%useKPP) then
+      ! Using this as a work array might cause confusion.
+      do K=1,nz ; do j=js,je ; do i=is,ie
+        Kd_heat(i,j,k) = min(Kd_heat(i,j,k), Kd_salt(i,j,k))
+      enddo ; enddo ; enddo
+    endif
+    call post_data(CS%id_Kd_int, Kd_heat, CS%diag)
+  endif
 
   if (CS%id_ea_t > 0) call post_data(CS%id_ea_t, ent_t(:,:,1:nz), CS%diag)
   if (CS%id_eb_t > 0) call post_data(CS%id_eb_t, ent_t(:,:,2:nz+1), CS%diag)
@@ -1562,6 +1763,68 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
       Sdif_flx(i,j,K) = (Idt * ent_s(i,j,K)) * (tv%S(i,j,k-1) - tv%S(i,j,k))
     enddo ; enddo ; enddo
     if (CS%id_Sdif > 0) call post_data(CS%id_Sdif, Sdif_flx, CS%diag)
+  endif
+
+  if (CS%Use_KdWork_diag .or. CS%Use_N2_diag) then
+    N2_salt(:,:,:) = 0.0
+    N2_temp(:,:,:) = 0.0
+    !Compute N2 and don't mask negatives here
+    EOSdom(:) = EOS_domain(G%HI)
+    if (nonBous) then
+      !$OMP parallel do default(shared)
+      do j=js,je
+        if (associated(tv%p_surf)) then
+          do i=is,ie ; p_i(i) = tv%p_surf(i,j) ; enddo
+        else
+          do i=is,ie ; p_i(i) = 0.0 ; enddo
+        endif
+        do K=2,nz
+          do i=is,ie
+            p_i(i) = p_i(i) + H_to_pres * h(i,j,k-1)
+          enddo
+          T_i = 0.5*(tv%T(:,j,k-1)+tv%T(:,j,k))
+          S_i = 0.5*(tv%S(:,j,k-1)+tv%S(:,j,k))
+          call calculate_specific_vol_derivs(T_i, S_i, p_i, dSpV_dT, dSpV_dS, tv%eqn_of_state, EOSdom)
+          do i=is,ie
+            I_dzval = 1.0 / (dz_neglect + 0.5*(dz(i,j,k-1) + dz(i,j,k)))
+            N2_salt(i,j,K) = (tv%S(i,j,k-1) - tv%S(i,j,k)) * (dSpv_dS(i) * (alt_H_to_pres * I_dzval))
+            N2_temp(i,j,K) = (tv%T(i,j,k-1) - tv%T(i,j,k)) * (dSpV_dT(i) * (alt_H_to_pres * I_dzval))
+          enddo
+        enddo
+      enddo
+    else
+      !$OMP parallel do default(shared)
+      do j=js,je
+        if (associated(tv%p_surf)) then
+          do i=is,ie ; p_i(i) = tv%p_surf(i,j) ; enddo
+        else
+          do i=is,ie ; p_i(i) = 0.0 ; enddo
+        endif
+        do K=2,nz
+          do i=is,ie
+            p_i(i) = p_i(i) + H_to_pres* h(i,j,k-1)
+          enddo
+          T_i = 0.5*(tv%T(:,j,k-1)+tv%T(:,j,k))
+          S_i = 0.5*(tv%S(:,j,k-1)+tv%S(:,j,k))
+          call calculate_density_derivs(T_i, S_i, p_i, dRhodT, dRhodS, tv%eqn_of_state, EOSdom)
+          do i=is,ie
+            I_h = 1.0 / (h_neglect + 0.5*(h(i,j,k-1) + h(i,j,k)))
+            N2_salt(i,j,K) = -(tv%S(i,j,k-1) - tv%S(i,j,k)) * (dRhodS(i) * (g_rho0 * I_h))
+            N2_temp(i,j,K) = -(tv%T(i,j,k-1) - tv%T(i,j,k)) * (dRhodT(i) * (g_rho0 * I_h))
+          enddo
+        enddo
+      enddo
+    endif
+    if (CS%id_N2_dd>0)      call post_data(CS%id_N2_dd, N2_salt(:,:,:)+N2_temp(:,:,:), CS%diag)
+    if (CS%id_N2_salt_dd>0) call post_data(CS%id_N2_salt_dd, N2_salt, CS%diag)
+    if (CS%id_N2_temp_dd>0) call post_data(CS%id_N2_temp_dd, N2_temp, CS%diag)
+
+    if (CS%Use_KdWork_diag) then
+       call KdWork_diagnostics(G,GV,US,CS%diag,CS%VBF,N2_salt,N2_temp,dz)
+    endif
+
+    call deallocate_VBF_CS(CS%VBF)
+
   endif
 
   ! mixing of passive tracers from massless boundary layers to interior
@@ -1603,7 +1866,8 @@ subroutine diabatic_ALE(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_end, 
                               KPP_CSp=CS%KPP_CSp, &
                               nonLocalTrans=KPP_NLTscalar, &
                               evap_CFL_limit=CS%evap_CFL_limit, &
-                              minimum_forcing_depth=CS%minimum_forcing_depth, h_BL=visc%h_ML)
+                              minimum_forcing_depth=CS%minimum_forcing_depth, h_BL=visc%h_ML, &
+                              prediabatic_T=CS%prediabatic_T, prediabatic_S=CS%prediabatic_S)
 
   call cpu_clock_end(id_clock_tracers)
 
@@ -1855,8 +2119,8 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
     if ((CS%ML_mix_first > 0.0) .or. CS%use_geothermal) then
       call find_uv_at_h(u, v, h_orig, u_h, v_h, G, GV, US, eaml, ebml)
       if (CS%debug) then
-        call hchksum(eaml, "after find_uv_at_h eaml", G%HI, scale=GV%H_to_MKS)
-        call hchksum(ebml, "after find_uv_at_h ebml", G%HI, scale=GV%H_to_MKS)
+        call hchksum(eaml, "after find_uv_at_h eaml", G%HI, unscale=GV%H_to_MKS)
+        call hchksum(ebml, "after find_uv_at_h ebml", G%HI, unscale=GV%H_to_MKS)
       endif
     else
       call find_uv_at_h(u, v, h, u_h, v_h, G, GV, US)
@@ -1882,10 +2146,10 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
     call MOM_state_chksum("before set_diffusivity", u, v, h, G, GV, US, haloshift=CS%halo_TS_diff)
   if (CS%double_diffuse) then
     call set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, CS%optics, visc, dt, Kd_int, G, GV, US, &
-                         CS%set_diff_CSp, Kd_lay=Kd_lay, Kd_extra_T=Kd_extra_T, Kd_extra_S=Kd_extra_S)
+                         CS%set_diff_CSp, CS%VBF, Kd_lay=Kd_lay, Kd_extra_T=Kd_extra_T, Kd_extra_S=Kd_extra_S)
   else
     call set_diffusivity(u, v, h, u_h, v_h, tv, fluxes, CS%optics, visc, dt, Kd_int, G, GV, US, &
-                         CS%set_diff_CSp, Kd_lay=Kd_lay)
+                         CS%set_diff_CSp, CS%VBF, Kd_lay=Kd_lay)
   endif
   call cpu_clock_end(id_clock_set_diffusivity)
   if (showCallTree) call callTree_waypoint("done with set_diffusivity (diabatic)")
@@ -1894,8 +2158,8 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
     call MOM_state_chksum("after set_diffusivity ", u, v, h, G, GV, US, haloshift=0)
     call MOM_forcing_chksum("after set_diffusivity ", fluxes, G, US, haloshift=0)
     call MOM_thermovar_chksum("after set_diffusivity ", tv, G, US)
-    call hchksum(Kd_lay, "after set_diffusivity Kd_lay", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
-    call hchksum(Kd_Int, "after set_diffusivity Kd_Int", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
+    call hchksum(Kd_lay, "after set_diffusivity Kd_lay", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
+    call hchksum(Kd_Int, "after set_diffusivity Kd_Int", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
   endif
 
 
@@ -1979,8 +2243,8 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
       call MOM_state_chksum("after KPP", u, v, h, G, GV, US, haloshift=0)
       call MOM_forcing_chksum("after KPP", fluxes, G, US, haloshift=0)
       call MOM_thermovar_chksum("after KPP", tv, G, US)
-      call hchksum(Kd_lay, "after KPP Kd_lay", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
-      call hchksum(Kd_Int, "after KPP Kd_Int", G%HI, haloshift=0, scale=GV%HZ_T_to_m2_s)
+      call hchksum(Kd_lay, "after KPP Kd_lay", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
+      call hchksum(Kd_Int, "after KPP Kd_Int", G%HI, haloshift=0, unscale=GV%HZ_T_to_m2_s)
     endif
   endif  ! endif for KPP
 
@@ -1993,9 +2257,9 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
     call cpu_clock_begin(id_clock_kpp)
     if (CS%debug) then
       call hchksum(KPP_temp_flux, "before KPP_applyNLT netHeat", G%HI, haloshift=0, &
-                   scale=US%C_to_degC*GV%H_to_m*US%s_to_T)
+                   unscale=US%C_to_degC*GV%H_to_m*US%s_to_T)
       call hchksum(KPP_salt_flux, "before KPP_applyNLT netSalt", G%HI, haloshift=0, &
-                   scale=US%S_to_ppt*GV%H_to_m*US%s_to_T)
+                   unscale=US%S_to_ppt*GV%H_to_m*US%s_to_T)
       call hchksum(KPP_NLTheat, "before KPP_applyNLT NLTheat", G%HI, haloshift=0)
       call hchksum(KPP_NLTscalar, "before KPP_applyNLT NLTscalar", G%HI, haloshift=0)
     endif
@@ -2052,8 +2316,8 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
     call MOM_forcing_chksum("after calc_entrain ", fluxes, G, US, haloshift=0)
     call MOM_thermovar_chksum("after calc_entrain ", tv, G, US)
     call MOM_state_chksum("after calc_entrain ", u, v, h, G, GV, US, haloshift=0)
-    call hchksum(ea, "after calc_entrain ea", G%HI, haloshift=0, scale=GV%H_to_MKS)
-    call hchksum(eb, "after calc_entrain eb", G%HI, haloshift=0, scale=GV%H_to_MKS)
+    call hchksum(ea, "after calc_entrain ea", G%HI, haloshift=0, unscale=GV%H_to_MKS)
+    call hchksum(eb, "after calc_entrain eb", G%HI, haloshift=0, unscale=GV%H_to_MKS)
   endif
 
   ! Save fields before boundary forcing is applied for tendency diagnostics
@@ -2208,8 +2472,8 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
         eb(i,j,k) = eb(i,j,k) + ebml(i,j,k)
       enddo ; enddo ; enddo
       if (CS%debug) then
-        call hchksum(ea, "after ea = ea + eaml", G%HI, haloshift=0, scale=GV%H_to_MKS)
-        call hchksum(eb, "after eb = eb + ebml", G%HI, haloshift=0, scale=GV%H_to_MKS)
+        call hchksum(ea, "after ea = ea + eaml", G%HI, haloshift=0, unscale=GV%H_to_MKS)
+        call hchksum(eb, "after eb = eb + ebml", G%HI, haloshift=0, unscale=GV%H_to_MKS)
       endif
     endif
 
@@ -2254,8 +2518,8 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
     if (associated(tv%T)) then
 
       if (CS%debug) then
-        call hchksum(ea, "before triDiagTS ea ", G%HI, haloshift=0, scale=GV%H_to_MKS)
-        call hchksum(eb, "before triDiagTS eb ", G%HI, haloshift=0, scale=GV%H_to_MKS)
+        call hchksum(ea, "before triDiagTS ea ", G%HI, haloshift=0, unscale=GV%H_to_MKS)
+        call hchksum(eb, "before triDiagTS eb ", G%HI, haloshift=0, unscale=GV%H_to_MKS)
       endif
       call cpu_clock_begin(id_clock_tridiag)
 
@@ -2302,8 +2566,8 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
   if (CS%debug) then
     call MOM_state_chksum("after mixed layer ", u, v, h, G, GV, US, haloshift=0)
     call MOM_thermovar_chksum("after mixed layer ", tv, G, US)
-    call hchksum(ea, "after mixed layer ea", G%HI, scale=GV%H_to_MKS)
-    call hchksum(eb, "after mixed layer eb", G%HI, scale=GV%H_to_MKS)
+    call hchksum(ea, "after mixed layer ea", G%HI, unscale=GV%H_to_MKS)
+    call hchksum(eb, "after mixed layer eb", G%HI, unscale=GV%H_to_MKS)
   endif
 
   call cpu_clock_begin(id_clock_remap)
@@ -2493,8 +2757,8 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
 ! mixed layer turbulence is applied elsewhere.
   if (CS%use_bulkmixedlayer) then
     if (CS%debug) then
-      call hchksum(ea, "before net flux rearrangement ea", G%HI, scale=GV%H_to_MKS)
-      call hchksum(eb, "before net flux rearrangement eb", G%HI, scale=GV%H_to_MKS)
+      call hchksum(ea, "before net flux rearrangement ea", G%HI, unscale=GV%H_to_MKS)
+      call hchksum(eb, "before net flux rearrangement eb", G%HI, unscale=GV%H_to_MKS)
     endif
     !$OMP parallel do default(shared) private(net_ent)
     do j=js,je
@@ -2505,8 +2769,8 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
       enddo ; enddo
     enddo
     if (CS%debug) then
-      call hchksum(ea, "after net flux rearrangement ea", G%HI, scale=GV%H_to_MKS)
-      call hchksum(eb, "after net flux rearrangement eb", G%HI, scale=GV%H_to_MKS)
+      call hchksum(ea, "after net flux rearrangement ea", G%HI, unscale=GV%H_to_MKS)
+      call hchksum(eb, "after net flux rearrangement eb", G%HI, unscale=GV%H_to_MKS)
     endif
   endif
 
@@ -2537,9 +2801,9 @@ subroutine layered_diabatic(u, v, h, tv, BLD, fluxes, visc, ADp, CDp, dt, Time_e
   !  or enters the ocean with the surface velocity.
   if (CS%debug) then
     call MOM_state_chksum("before u/v tridiag ", u, v, h, G, GV, US, haloshift=0)
-    call hchksum(ea, "before u/v tridiag ea", G%HI, scale=GV%H_to_MKS)
-    call hchksum(eb, "before u/v tridiag eb", G%HI, scale=GV%H_to_MKS)
-    call hchksum(hold, "before u/v tridiag hold", G%HI, scale=GV%H_to_MKS)
+    call hchksum(ea, "before u/v tridiag ea", G%HI, unscale=GV%H_to_MKS)
+    call hchksum(eb, "before u/v tridiag eb", G%HI, unscale=GV%H_to_MKS)
+    call hchksum(hold, "before u/v tridiag hold", G%HI, unscale=GV%H_to_MKS)
   endif
   call cpu_clock_begin(id_clock_tridiag)
 
@@ -2713,7 +2977,6 @@ subroutine diagnose_diabatic_diff_tendency(tv, h, temp_old, saln_old, dt, G, GV,
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: work_3d ! A 3-d work array for diagnostics [various]
   real, dimension(SZI_(G),SZJ_(G))          :: work_2d ! A 2-d work array for diagnostics [various]
   real :: Idt  ! The inverse of the timestep [T-1 ~> s-1]
-  real :: ppt2mks  ! Conversion factor from S to kg/kg [S-1 ~> ppt-1].
   integer :: i, j, k, is, ie, js, je, nz
   logical :: do_saln_tend   ! Calculate salinity-based tendency diagnostics
 
@@ -2763,9 +3026,8 @@ subroutine diagnose_diabatic_diff_tendency(tv, h, temp_old, saln_old, dt, G, GV,
 
     ! salt tendency
     if (CS%id_diabatic_diff_salt_tend > 0 .or. CS%id_diabatic_diff_salt_tend_2d > 0) then
-      ppt2mks = US%S_to_ppt*0.001
       do k=1,nz ; do j=js,je ; do i=is,ie
-        work_3d(i,j,k) = h(i,j,k)*GV%H_to_RZ * ppt2mks * work_3d(i,j,k)
+        work_3d(i,j,k) = h(i,j,k) * work_3d(i,j,k)
       enddo ; enddo ; enddo
       if (CS%id_diabatic_diff_salt_tend > 0) then
         call post_data(CS%id_diabatic_diff_salt_tend, work_3d, CS%diag, alt_h=h)
@@ -2808,7 +3070,6 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)) :: work_3d ! A 3-d work array for diagnostics [various]
   real, dimension(SZI_(G),SZJ_(G))          :: work_2d ! A 2-d work array for diagnostics [various]
   real :: Idt  ! The inverse of the timestep [T-1 ~> s-1]
-  real :: ppt2mks  ! Conversion factor from S to kg/kg [S-1 ~> ppt-1].
   integer :: i, j, k, is, ie, js, je, nz
 
   is  = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec ; nz = GV%ke
@@ -2859,9 +3120,8 @@ subroutine diagnose_boundary_forcing_tendency(tv, h, temp_old, saln_old, h_old, 
 
   ! salt tendency
   if (CS%id_boundary_forcing_salt_tend > 0 .or. CS%id_boundary_forcing_salt_tend_2d > 0) then
-    ppt2mks = US%S_to_ppt*0.001
     do k=1,nz ; do j=js,je ; do i=is,ie
-      work_3d(i,j,k) = GV%H_to_RZ * ppt2mks * Idt * (h(i,j,k) * tv%S(i,j,k) - h_old(i,j,k) * saln_old(i,j,k))
+      work_3d(i,j,k) = Idt * (h(i,j,k) * tv%S(i,j,k) - h_old(i,j,k) * saln_old(i,j,k))
     enddo ; enddo ; enddo
     if (CS%id_boundary_forcing_salt_tend > 0) then
       call post_data(CS%id_boundary_forcing_salt_tend, work_3d, CS%diag, alt_h=h_old)
@@ -3012,7 +3272,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
 
   ! Local variables
   real    :: Kd  ! A diffusivity used in the default for other tracer diffusivities [Z2 T-1 ~> m2 s-1]
-  logical :: use_temperature
+  logical :: use_temperature, use_MARBL_tracers
   character(len=20) :: EN1, EN2, EN3
 
   ! This "include" declares and sets the variable "version".
@@ -3031,7 +3291,12 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
   CS%diag => diag
   CS%Time => Time
 
-  if (associated(tracer_flow_CSp)) CS%tracer_flow_CSp => tracer_flow_CSp
+  if (associated(tracer_flow_CSp)) then
+    CS%tracer_flow_CSp => tracer_flow_CSp
+    call extract_tracer_flow_member(tracer_flow_CSp, use_MARBL_tracers=use_MARBL_tracers)
+    if (use_MARBL_tracers) &
+      allocate(CS%prediabatic_T(SZI_(G),SZJ_(G), SZK_(G)), CS%prediabatic_S(SZI_(G),SZJ_(G), SZK_(G)))
+  end if
   if (associated(sponge_CSp))      CS%sponge_CSp      => sponge_CSp
   if (associated(ALE_sponge_CSp))  CS%ALE_sponge_CSp  => ALE_sponge_CSp
   if (associated(oda_incupd_CSp))  CS%oda_incupd_CSp  => oda_incupd_CSp
@@ -3225,6 +3490,18 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
           Time, "Advective diapycnal salnity flux across interfaces", &
           units="psu m s-1", conversion=US%S_to_ppt*GV%H_to_m*US%s_to_T)
     endif
+
+    CS%id_N2_dd = register_diag_field('ocean_model',"N2_diabatic", diag%axesTi, &
+        Time, "Squared buoyancy frequency diagnosed after diffusion applied in thermodynamic timestep.", &
+        "s-2", conversion=US%s_to_T**2)
+    CS%id_N2_temp_dd = register_diag_field('ocean_model',"N2_temp_diabatic", diag%axesTi, &
+         Time, "Squared buoyancy frequency due to temperature stratification diagnosed after diffusion applied "//&
+         "in thermodynamic timestep.", "s-2", conversion=US%s_to_T**2)
+    CS%id_N2_salt_dd = register_diag_field('ocean_model',"N2_salt_diabatic", diag%axesTi, &
+         Time, "Squared buoyancy frequency due to salinity stratification diagnosed after diffusion applied "//&
+         "in thermodynamic timestep.", "s-2", conversion=US%s_to_T**2)
+    if (CS%id_N2_dd>0 .or. CS%id_N2_temp_dd>0 .or. CS%id_N2_salt_dd>0) CS%Use_N2_diag = .true.
+
     CS%id_MLD_003 = register_diag_field('ocean_model', 'MLD_003', diag%axesT1, Time, &
         'Mixed layer depth (delta rho = 0.03)', units='m', conversion=US%Z_to_m, &
         cmor_field_name='mlotst', cmor_long_name='Ocean Mixed Layer Thickness Defined by Sigma T', &
@@ -3237,13 +3514,8 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
         'Mixed layer depth (delta rho = 0.125)', 'm', conversion=US%Z_to_m)
     call get_param(param_file, mdl, "MLD_EN_VALS", CS%MLD_En_vals, &
          "The energy values used to compute MLDs.  If not set (or all set to 0.), the "//&
-         "default will overwrite to 25., 2500., 250000.", &
-         units='J/m2', default=0., scale=US%W_m2_to_RZ3_T3*US%s_to_T)
-    if ((CS%MLD_En_vals(1)==0.).and.(CS%MLD_En_vals(2)==0.).and.(CS%MLD_En_vals(3)==0.)) then
-      CS%MLD_En_vals = (/ 25.*US%W_m2_to_RZ3_T3*US%s_to_T, &
-                        2500.*US%W_m2_to_RZ3_T3*US%s_to_T, &
-                      250000.*US%W_m2_to_RZ3_T3*US%s_to_T /)
-    endif
+         "default will overwrite to 25., 2500., 250000.", units='J/m2', &
+         defaults=(/25., 2500., 250000./), scale=US%W_m2_to_RZ3_T3*US%s_to_T)
     write(EN1,'(F10.2)') CS%MLD_En_vals(1)*US%RZ3_T3_to_W_m2*US%T_to_s
     write(EN2,'(F10.2)') CS%MLD_En_vals(2)*US%RZ3_T3_to_W_m2*US%T_to_s
     write(EN3,'(F10.2)') CS%MLD_En_vals(3)*US%RZ3_T3_to_W_m2*US%T_to_s
@@ -3256,11 +3528,50 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_MLD_EN3 = register_diag_field('ocean_model', 'MLD_EN3', diag%axesT1, Time, &
          'Mixed layer depth for energy value set to '//trim(EN3)//' J/m2 (Energy set by 3rd MLD_EN_VALS)', &
          units='m', conversion=US%Z_to_m)
+    call get_param(param_file, mdl, "BMLD_EN_VALS", CS%BMLD_En_vals, &
+         "The energy values used to compute Bottom MLDs.  If not set (or all set to 0.), the "//&
+         "default will overwrite to 25., 2500., 250000.", units='J/m2', &
+         defaults=(/25., 2500., 250000./), scale=US%W_m2_to_RZ3_T3*US%s_to_T)
+    write(EN1,'(F10.2)') CS%BMLD_En_vals(1)*US%RZ3_T3_to_W_m2*US%T_to_s
+    write(EN2,'(F10.2)') CS%BMLD_En_vals(2)*US%RZ3_T3_to_W_m2*US%T_to_s
+    write(EN3,'(F10.2)') CS%BMLD_En_vals(3)*US%RZ3_T3_to_W_m2*US%T_to_s
+    CS%id_BMLD_EN1 = register_diag_field('ocean_model', 'BMLD_EN1', diag%axesT1, Time, &
+         'Bottom mixed layer depth for energy value set to '//trim(EN1)//' J/m2 (Energy set by 1st MLD_EN_VALS)', &
+         units='m', conversion=US%Z_to_m)
+    CS%id_BMLD_EN2 = register_diag_field('ocean_model', 'BMLD_EN2', diag%axesT1, Time, &
+         'Bottom mixed layer depth for energy value set to '//trim(EN2)//' J/m2 (Energy set by 2nd MLD_EN_VALS)', &
+         units='m', conversion=US%Z_to_m)
+    CS%id_BMLD_EN3 = register_diag_field('ocean_model', 'BMLD_EN3', diag%axesT1, Time, &
+         'Bottom mixed layer depth for energy value set to '//trim(EN3)//' J/m2 (Energy set by 3rd MLD_EN_VALS)', &
+         units='m', conversion=US%Z_to_m)
+    if ((CS%id_MLD_EN1>0).or. (CS%id_MLD_EN2>0).or. (CS%id_MLD_EN3>0).or. &
+         (CS%id_BMLD_EN1>0).or.(CS%id_BMLD_EN2>0).or.(CS%id_BMLD_EN3>0)) then
+       call get_param(param_file, mdl, "USE_OM4_MLD_EN_ITER", CS%use_OM4_MLD_En_iter, &
+            "If true, uses an older set of iteration coefficients in computing the PE based "//&
+            "surface MLD to reproduce OM4 era models.  False uses an updated (general) method.",&
+            default=.true.)
+    endif
     CS%id_subMLN2  = register_diag_field('ocean_model', 'subML_N2', diag%axesT1, Time, &
         'Squared buoyancy frequency below mixed layer', units='s-2', conversion=US%s_to_T**2)
     CS%id_MLD_user = register_diag_field('ocean_model', 'MLD_user', diag%axesT1, Time, &
         'Mixed layer depth (used defined)', units='m', conversion=US%Z_to_m)
+    if (CS%id_MLD_003 > 0) then
+      call get_param(param_file, mdl, "HREF_FOR_MLD", CS%ref_h_mld, &
+           "Reference depth used to calculate the potential density used to find the mixed layer depth "//&
+           "based on a delta rho = 0.03 kg/m3.", units='m', default=0.0, scale=US%m_to_Z)
+      CS%id_MLD_003_zr = register_diag_field('ocean_model', 'MLD_003_refZ', diag%axesT1, Time, &
+           'Depth of reference density for MLD (delta rho = 0.03)', units='m', conversion=US%Z_to_m)
+      CS%id_MLD_003_rr = register_diag_field('ocean_model', 'MLD_003_refRho', diag%axesT1, Time, &
+           'Reference density for MLD (delta rho = 0.03)', units='kg/m3', conversion=US%R_to_kg_m3)
+    endif
   endif
+
+  call KdWork_init(Time, G,GV,US,diag,CS%VBF,CS%Use_KdWork_diag)
+  if (CS%Use_KdWork_diag.and.(.not.useALEalgorithm)) &
+    call MOM_error(WARNING,"The KdWork diagnostics are not fully implemented for use in layer mode.")
+  if (CS%Use_KdWork_diag.and.(CS%use_legacy_diabatic)) &
+    call MOM_error(WARNING,"The KdWork diagnostics are only approximate with the legacy diabatic driver.")
+
   call get_param(param_file, mdl, "DIAG_MLD_DENSITY_DIFF", CS%MLDdensityDifference, &
                  "The density difference used to determine a diagnostic mixed "//&
                  "layer depth, MLD_user, following the definition of Levitus 1982. "//&
@@ -3292,8 +3603,8 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
   CS%id_Kd_int = register_diag_field('ocean_model', 'Kd_interface', diag%axesTi, Time, &
       'Total diapycnal diffusivity at interfaces', 'm2 s-1', conversion=GV%HZ_T_to_m2_s)
   if (CS%use_energetic_PBL) then
-      CS%id_Kd_ePBL = register_diag_field('ocean_model', 'Kd_ePBL', diag%axesTi, Time, &
-          'ePBL diapycnal diffusivity at interfaces', 'm2 s-1', conversion=GV%HZ_T_to_m2_s)
+    CS%id_Kd_ePBL = register_diag_field('ocean_model', 'Kd_ePBL', diag%axesTi, Time, &
+        'ePBL diapycnal diffusivity at interfaces', 'm2 s-1', conversion=GV%HZ_T_to_m2_s)
   endif
 
   CS%id_Kd_heat = register_diag_field('ocean_model', 'Kd_heat', diag%axesTi, Time, &
@@ -3349,7 +3660,8 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_diabatic_diff_salt_tend = register_diag_field('ocean_model',                   &
         'diabatic_salt_tendency', diag%axesTL, Time,                                     &
         'Diabatic diffusion of salt tendency',                                           &
-        'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, cmor_field_name='osaltdiff', &
+        'kg m-2 s-1', conversion=US%S_to_ppt*0.001*GV%H_to_RZ*US%RZ_T_to_kg_m2s, &
+        cmor_field_name='osaltdiff', &
         cmor_standard_name='tendency_of_sea_water_salinity_expressed_as_salt_content_'// &
                            'due_to_parameterized_dianeutral_mixing',                     &
         cmor_long_name='Tendency of sea water salinity expressed as salt content '//     &
@@ -3376,7 +3688,8 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_diabatic_diff_salt_tend_2d = register_diag_field('ocean_model',                &
         'diabatic_salt_tendency_2d', diag%axesT1, Time,                                  &
         'Depth integrated diabatic diffusion salt tendency',                             &
-        'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, cmor_field_name='osaltdiff_2d',              &
+        'kg m-2 s-1', conversion=US%S_to_ppt*0.001*GV%H_to_RZ*US%RZ_T_to_kg_m2s, &
+        cmor_field_name='osaltdiff_2d', &
         cmor_standard_name='tendency_of_sea_water_salinity_expressed_as_salt_content_'// &
                            'due_to_parameterized_dianeutral_mixing_depth_integrated',    &
         cmor_long_name='Tendency of sea water salinity expressed as salt content '//     &
@@ -3423,7 +3736,8 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
 
     CS%id_boundary_forcing_salt_tend = register_diag_field('ocean_model',&
         'boundary_forcing_salt_tendency', diag%axesTL, Time,             &
-        'Boundary forcing salt tendency', 'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s, &
+        'Boundary forcing salt tendency', &
+        'kg m-2 s-1', conversion=US%S_to_ppt*0.001*GV%H_to_RZ*US%RZ_T_to_kg_m2s, &
         v_extensive = .true.)
     if (CS%id_boundary_forcing_salt_tend > 0) then
       CS%boundary_forcing_tendency_diag = .true.
@@ -3442,7 +3756,7 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
     CS%id_boundary_forcing_salt_tend_2d = register_diag_field('ocean_model',&
         'boundary_forcing_salt_tendency_2d', diag%axesT1, Time,             &
         'Depth integrated boundary forcing of ocean salt', &
-        'kg m-2 s-1', conversion=US%RZ_T_to_kg_m2s)
+        'kg m-2 s-1', conversion=US%S_to_ppt*0.001*GV%H_to_RZ*US%RZ_T_to_kg_m2s)
     if (CS%id_boundary_forcing_salt_tend_2d > 0) then
       CS%boundary_forcing_tendency_diag = .true.
     endif
@@ -3560,8 +3874,9 @@ subroutine diabatic_driver_init(Time, G, GV, US, param_file, useALEalgorithm, di
 end subroutine diabatic_driver_init
 
 !> Routine to register restarts, pass-through to children modules
-subroutine register_diabatic_restarts(G, US, param_file, int_tide_CSp, restart_CSp, CS)
+subroutine register_diabatic_restarts(G, GV, US, param_file, int_tide_CSp, restart_CSp, CS)
   type(ocean_grid_type), intent(in)    :: G           !< The ocean's grid structure
+  type(verticalGrid_type), intent(in)  :: GV          !< The ocean's vertical grid structure
   type(unit_scale_type), intent(in)    :: US          !< A dimensional unit scaling type
   type(param_file_type), intent(in)    :: param_file  !< A structure to parse for run-time parameters
   type(int_tide_CS),     pointer       :: int_tide_CSp !< Internal tide control structure
@@ -3583,7 +3898,7 @@ subroutine register_diabatic_restarts(G, US, param_file, int_tide_CSp, restart_C
   call read_param(param_file, "INTERNAL_TIDES", use_int_tides)
 
   if (use_int_tides) then
-    call register_int_tide_restarts(G, US, param_file, int_tide_CSp, restart_CSp)
+    call register_int_tide_restarts(G, GV, US, param_file, int_tide_CSp, restart_CSp)
   endif
 
   call register_KPP_restarts(G, param_file, restart_CSp, CS%KPP_CSp)
@@ -3594,10 +3909,17 @@ end subroutine register_diabatic_restarts
 subroutine diabatic_driver_end(CS)
   type(diabatic_CS), intent(inout) :: CS  !< module control structure
 
+  if (associated(CS%VBF)) then
+    call KdWork_end(CS%VBF)
+  endif
+
   if (associated(CS%optics)) then
     call opacity_end(CS%opacity, CS%optics)
     deallocate(CS%optics)
   endif
+
+  if (allocated(CS%prediabatic_T)) deallocate(CS%prediabatic_T)
+  if (allocated(CS%prediabatic_S)) deallocate(CS%prediabatic_S)
 
   if (CS%debug_energy_req) &
     call diapyc_energy_req_end(CS%diapyc_en_rec_CSp)

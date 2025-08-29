@@ -23,6 +23,7 @@ use MOM_grid,          only : ocean_grid_type
 use MOM_horizontal_regridding, only : horiz_interp_and_extrap_tracer
 use MOM_interpolate,   only : init_external_field, get_external_field_info, time_interp_external_init
 use MOM_interpolate,   only : external_field
+use MOM_io,            only : axis_info
 use MOM_remapping,     only : remapping_cs, remapping_core_h, initialize_remapping
 use MOM_spatial_means, only : global_i_mean
 use MOM_time_manager,  only : time_type
@@ -86,6 +87,7 @@ type :: p2d ; private
   character(len=:), allocatable  :: name  !< The name of the input field
   character(len=:), allocatable  :: long_name !< The long name of the input field
   character(len=:), allocatable  :: unit !< The unit of the input field
+  type(axis_info),  allocatable  :: axes_data(:) !< Axis types for the input field
 end type p2d
 
 !> ALE sponge control structure
@@ -188,6 +190,7 @@ subroutine initialize_ALE_sponge_fixed(Iresttime, G, GV, param_file, CS, data_h,
   logical :: data_h_to_Z
   logical :: bndExtrapolation = .true. ! If true, extrapolate boundaries
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
+  logical :: om4_remap_via_sub_cells ! If true, use the OM4 remapping algorithm
   integer :: i, j, k, col, total_sponge_cols, total_sponge_cols_u, total_sponge_cols_v
 
   if (associated(CS)) then
@@ -212,16 +215,17 @@ subroutine initialize_ALE_sponge_fixed(Iresttime, G, GV, param_file, CS, data_h,
                  default=.false.)
 
   call get_param(param_file, mdl, "REMAPPING_SCHEME", remapScheme, &
-                 "This sets the reconstruction scheme used "//&
-                 " for vertical remapping for all variables.", &
                  default="PLM", do_not_log=.true.)
+  call get_param(param_file, mdl, "SPONGE_REMAPPING_SCHEME", remapScheme, &
+          "This sets the reconstruction scheme used "//&
+          "for vertical remapping for all SPONGE variables.", default=remapScheme)
 
+  !This default should be from REMAP_BOUNDARY_EXTRAP
   call get_param(param_file, mdl, "BOUNDARY_EXTRAPOLATION", bndExtrapolation, &
-                 "When defined, a proper high-order reconstruction "//&
-                 "scheme is used within boundary cells rather "//&
-                 "than PCM. E.g., if PPM is used for remapping, a "//&
-                 "PPM reconstruction will also be used within boundary cells.", &
                  default=.false., do_not_log=.true.)
+  call get_param(param_file, mdl, "SPONGE_BOUNDARY_EXTRAP", bndExtrapolation, &
+                 "If true, values at the interfaces of SPONGE boundary cells are "//&
+                 "extrapolated instead of piecewise constant", default=bndExtrapolation)
   call get_param(param_file, mdl, "DEFAULT_ANSWER_DATE", default_answer_date, &
                  "This sets the default value for the various _ANSWER_DATE parameters.", &
                  default=99991231)
@@ -232,6 +236,12 @@ subroutine initialize_ALE_sponge_fixed(Iresttime, G, GV, param_file, CS, data_h,
                  "robust and accurate forms of mathematically equivalent expressions.", &
                  default=default_answer_date, do_not_log=.not.GV%Boussinesq)
   if (.not.GV%Boussinesq) CS%remap_answer_date = max(CS%remap_answer_date, 20230701)
+  call get_param(param_file, mdl, "REMAPPING_USE_OM4_SUBCELLS", om4_remap_via_sub_cells, &
+                 do_not_log=.true., default=.true.)
+  call get_param(param_file, mdl, "SPONGE_REMAPPING_USE_OM4_SUBCELLS", om4_remap_via_sub_cells, &
+                 "If true, use the OM4 remapping-via-subcells algorithm for ALE sponge. "//&
+                 "See REMAPPING_USE_OM4_SUBCELLS for more details. "//&
+                 "We recommend setting this option to false.", default=om4_remap_via_sub_cells)
 
   call get_param(param_file, mdl, "HOR_REGRID_ANSWER_DATE", CS%hor_regrid_answer_date, &
                  "The vintage of the order of arithmetic for horizontal regridding.  "//&
@@ -282,6 +292,7 @@ subroutine initialize_ALE_sponge_fixed(Iresttime, G, GV, param_file, CS, data_h,
 
 ! Call the constructor for remapping control structure
   call initialize_remapping(CS%remap_cs, remapScheme, boundary_extrapolation=bndExtrapolation, &
+                            om4_remap_via_sub_cells=om4_remap_via_sub_cells, &
                             answer_date=CS%remap_answer_date)
 
   call log_param(param_file, mdl, "!Total sponge columns at h points", total_sponge_cols, &
@@ -295,7 +306,7 @@ subroutine initialize_ALE_sponge_fixed(Iresttime, G, GV, param_file, CS, data_h,
     call pass_var(data_dz, G%Domain, To_All+Omit_Corners, halo=1)
 
     ! u points
-    CS%num_col_u = 0 ;
+    CS%num_col_u = 0
     if (present(Iresttime_u_in)) then
       Iresttime_u(:,:) = Iresttime_u_in(:,:)
     else
@@ -339,15 +350,15 @@ subroutine initialize_ALE_sponge_fixed(Iresttime, G, GV, param_file, CS, data_h,
                 "The total number of columns where sponges are applied at u points.", like_default=.true.)
 
     ! v points
-    CS%num_col_v = 0 ;
+    CS%num_col_v = 0
     if (present(Iresttime_v_in)) then
       Iresttime_v(:,:) = Iresttime_v_in(:,:)
     else
-      do J=G%jscB,G%jecB; do i=G%isc,G%iec
+      do J=G%jscB,G%jecB ; do i=G%isc,G%iec
         Iresttime_v(i,J) = 0.5 * (Iresttime(i,j) + Iresttime(i,j+1))
       enddo ; enddo
     endif
-    do J=G%jscB,G%jecB; do i=G%isc,G%iec
+    do J=G%jscB,G%jecB ; do i=G%isc,G%iec
       if ((Iresttime_v(i,J) > 0.0) .and. (G%mask2dCv(i,J) > 0.0)) &
         CS%num_col_v = CS%num_col_v + 1
     enddo ; enddo
@@ -460,12 +471,14 @@ subroutine initialize_ALE_sponge_varying(Iresttime, G, GV, US, param_file, CS, I
   character(len=40)  :: mdl = "MOM_sponge"  ! This module's name.
   real, allocatable, dimension(:,:) :: Iresttime_u !< inverse of the restoring time at u points [T-1 ~> s-1]
   real, allocatable, dimension(:,:) :: Iresttime_v !< inverse of the restoring time at v points [T-1 ~> s-1]
+  real :: dz_neglect, dz_neglect_edge ! Negligible layer extents [Z ~> m]
   ! This include declares and sets the variable "version".
 # include "version_variable.h"
   character(len=64)  :: remapScheme
   logical :: use_sponge
   logical :: bndExtrapolation = .true. ! If true, extrapolate boundaries
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
+  logical :: om4_remap_via_sub_cells ! If true, use the OM4 remapping algorithm
   integer :: i, j, col, total_sponge_cols, total_sponge_cols_u, total_sponge_cols_v
 
   if (associated(CS)) then
@@ -485,15 +498,16 @@ subroutine initialize_ALE_sponge_varying(Iresttime, G, GV, US, param_file, CS, I
                  "Apply sponges in u and v, in addition to tracers.", &
                  default=.false.)
   call get_param(param_file, mdl, "REMAPPING_SCHEME", remapScheme, &
-                 "This sets the reconstruction scheme used "//&
-                 " for vertical remapping for all variables.", &
                  default="PLM", do_not_log=.true.)
+  call get_param(param_file, mdl, "SPONGE_REMAPPING_SCHEME", remapScheme, &
+          "This sets the reconstruction scheme used "//&
+          "for vertical remapping for all SPONGE variables.", default=remapScheme)
+  !This default should be from REMAP_BOUNDARY_EXTRAP
   call get_param(param_file, mdl, "BOUNDARY_EXTRAPOLATION", bndExtrapolation, &
-                 "When defined, a proper high-order reconstruction "//&
-                 "scheme is used within boundary cells rather "//&
-                 "than PCM. E.g., if PPM is used for remapping, a "//&
-                 "PPM reconstruction will also be used within boundary cells.", &
                  default=.false., do_not_log=.true.)
+  call get_param(param_file, mdl, "SPONGE_BOUNDARY_EXTRAP", bndExtrapolation, &
+                 "If true, values at the interfaces of SPONGE boundary cells are "//&
+                 "extrapolated instead of piecewise constant", default=bndExtrapolation)
   call get_param(param_file, mdl, "VARYING_SPONGE_MASK_THICKNESS", CS%varying_input_dz_mask, &
                  "An input file thickness below which the target values with "//&
                  "time-varying sponges are replaced by the value above.", &
@@ -508,6 +522,12 @@ subroutine initialize_ALE_sponge_varying(Iresttime, G, GV, US, param_file, CS, I
                  "that were in use at the end of 2018.  Higher values result in the use of more "//&
                  "robust and accurate forms of mathematically equivalent expressions.", &
                  default=default_answer_date)
+  call get_param(param_file, mdl, "REMAPPING_USE_OM4_SUBCELLS", om4_remap_via_sub_cells, &
+                 do_not_log=.true., default=.true.)
+  call get_param(param_file, mdl, "SPONGE_REMAPPING_USE_OM4_SUBCELLS", om4_remap_via_sub_cells, &
+                 "If true, use the OM4 remapping-via-subcells algorithm for ALE sponge. "//&
+                 "See REMAPPING_USE_OM4_SUBCELLS for more details. "//&
+                 "We recommend setting this option to false.", default=om4_remap_via_sub_cells)
   call get_param(param_file, mdl, "HOR_REGRID_ANSWER_DATE", CS%hor_regrid_answer_date, &
                  "The vintage of the order of arithmetic for horizontal regridding.  "//&
                  "Dates before 20190101 give the same answers as the code did in late 2018, "//&
@@ -546,8 +566,19 @@ subroutine initialize_ALE_sponge_varying(Iresttime, G, GV, US, param_file, CS, I
   call sum_across_PEs(total_sponge_cols)
 
 ! Call the constructor for remapping control structure
+  if (CS%remap_answer_date >= 20190101) then
+    dz_neglect = GV%dZ_subroundoff ; dz_neglect_edge = GV%dZ_subroundoff
+  elseif (GV%Boussinesq) then
+    dz_neglect = US%m_to_Z*1.0e-30 ; dz_neglect_edge = US%m_to_Z*1.0e-10
+  elseif (GV%semi_Boussinesq) then
+    dz_neglect = GV%kg_m2_to_H*GV%H_to_Z*1.0e-30 ; dz_neglect_edge = GV%kg_m2_to_H*GV%H_to_Z*1.0e-10
+  else
+    dz_neglect = GV%dZ_subroundoff ; dz_neglect_edge = GV%dZ_subroundoff
+  endif
   call initialize_remapping(CS%remap_cs, remapScheme, boundary_extrapolation=bndExtrapolation, &
-                            answer_date=CS%remap_answer_date)
+                            om4_remap_via_sub_cells=om4_remap_via_sub_cells, &
+                            answer_date=CS%remap_answer_date, &
+                            h_neglect=dz_neglect, h_neglect_edge=dz_neglect_edge)
   call log_param(param_file, mdl, "!Total sponge columns at h points", total_sponge_cols, &
                  "The total number of columns where sponges are applied at h points.", like_default=.true.)
   if (CS%sponge_uv) then
@@ -563,8 +594,8 @@ subroutine initialize_ALE_sponge_varying(Iresttime, G, GV, US, param_file, CS, I
         Iresttime_u(I,j) = 0.5 * (Iresttime(i,j) + Iresttime(i+1,j))
       enddo ; enddo
     endif
-    CS%num_col_u = 0 ;
-    do j=G%jsc,G%jec; do I=G%iscB,G%iecB
+    CS%num_col_u = 0
+    do j=G%jsc,G%jec ; do I=G%iscB,G%iecB
       if ((Iresttime_u(I,j) > 0.0) .and. (G%mask2dCu(I,j) > 0.0)) &
         CS%num_col_u = CS%num_col_u + 1
     enddo ; enddo
@@ -591,12 +622,12 @@ subroutine initialize_ALE_sponge_varying(Iresttime, G, GV, US, param_file, CS, I
     if (present(Iresttime_v_in)) then
       Iresttime_v(:,:) = Iresttime_v_in(:,:)
     else
-      do J=G%jscB,G%jecB; do i=G%isc,G%iec
+      do J=G%jscB,G%jecB ; do i=G%isc,G%iec
         Iresttime_v(i,J) = 0.5 * (Iresttime(i,j) + Iresttime(i,j+1))
       enddo ; enddo
     endif
-    CS%num_col_v = 0 ;
-    do J=G%jscB,G%jecB; do i=G%isc,G%iec
+    CS%num_col_v = 0
+    do J=G%jscB,G%jecB ; do i=G%isc,G%iec
       if ((Iresttime_v(i,J) > 0.0) .and. (G%mask2dCv(i,J) > 0.0)) &
         CS%num_col_v = CS%num_col_v + 1
     enddo ; enddo
@@ -632,16 +663,23 @@ subroutine init_ALE_sponge_diags(Time, G, diag, CS, US)
   type(ALE_sponge_CS),     intent(inout) :: CS   !< ALE sponge control structure
   type(unit_scale_type),   intent(in)    :: US   !< A dimensional unit scaling type
   ! Local Variables
+  character(len=:), allocatable  :: tend_unit  ! The units for a sponge tendency diagnostic.
+  real :: tend_conv  ! The conversion factor use for the sponge tendency [A T-1 ~> a s-1]
   integer :: m
 
   CS%diag => diag
 
   do m=1,CS%fldno
     CS%id_sp_tendency(m) = -1
-    CS%id_sp_tendency(m) = register_diag_field('ocean_model', &
-      'sp_tendency_' // CS%Ref_val(m)%name, diag%axesTL, Time, &
-      'Time tendency due to restoring ' // CS%Ref_val(m)%long_name, &
-      CS%Ref_val(m)%unit, conversion=US%s_to_T)
+    if ((trim(CS%Ref_val(m)%unit) == 'none') .or. (len_trim(CS%Ref_val(m)%unit) == 0)) then
+      tend_unit = "s-1"
+    else
+      tend_unit = trim(CS%Ref_val(m)%unit)//" s-1"
+    endif
+    tend_conv = US%s_to_T ; if (CS%Ref_val(m)%scale /= 0.0) tend_conv = US%s_to_T / CS%Ref_val(m)%scale
+    CS%id_sp_tendency(m) = register_diag_field('ocean_model', 'sp_tendency_'//CS%Ref_val(m)%name, &
+        diag%axesTL, Time, long_name='Time tendency due to restoring '//CS%Ref_val(m)%long_name, &
+        units=tend_unit, conversion=tend_conv)
   enddo
 
   CS%id_sp_u_tendency = -1
@@ -685,8 +723,8 @@ subroutine set_up_ALE_sponge_field_fixed(sp_val, G, GV, f_ptr, CS,  &
   if (.not.associated(CS)) return
 
   scale_fac = 1.0 ; if (present(scale)) scale_fac = scale
-  long_name = sp_name; if (present(sp_long_name)) long_name = sp_long_name
-  unit = 'none'; if (present(sp_unit)) unit = sp_unit
+  long_name = sp_name ; if (present(sp_long_name)) long_name = sp_long_name
+  unit = 'none' ; if (present(sp_unit)) unit = sp_unit
 
   CS%fldno = CS%fldno + 1
   if (CS%fldno > MAX_FIELDS_) then
@@ -701,6 +739,7 @@ subroutine set_up_ALE_sponge_field_fixed(sp_val, G, GV, f_ptr, CS,  &
   CS%Ref_val(CS%fldno)%name = sp_name
   CS%Ref_val(CS%fldno)%long_name = long_name
   CS%Ref_val(CS%fldno)%unit = unit
+  CS%Ref_val(CS%fldno)%scale = scale_fac
   allocate(CS%Ref_val(CS%fldno)%p(CS%nz_data,CS%num_col), source=0.0)
   do col=1,CS%num_col
     do k=1,CS%nz_data
@@ -744,15 +783,15 @@ subroutine set_up_ALE_sponge_field_varying(filename, fieldname, Time, G, GV, US,
   character(len=256) :: mesg ! String for error messages
   character(len=256) :: long_name ! The long name of the tracer field
   character(len=256) :: unit ! The unit of the tracer field
-  long_name = sp_name; if (present(sp_long_name)) long_name = sp_long_name
-  unit = 'none'; if (present(sp_unit)) unit = sp_unit
+  long_name = sp_name ; if (present(sp_long_name)) long_name = sp_long_name
+  unit = 'none' ; if (present(sp_unit)) unit = sp_unit
 
   ! Local variables for ALE remapping
 
   if (.not.associated(CS)) return
   ! initialize time interpolator module
   call time_interp_external_init()
-  isd = G%isd; ied = G%ied; jsd = G%jsd; jed = G%jed
+  isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
   CS%fldno = CS%fldno + 1
   if (CS%fldno > MAX_FIELDS_) then
     write(mesg, '("Increase MAX_FIELDS_ to at least ",I3," in MOM_memory.h or decrease "//&
@@ -770,7 +809,7 @@ subroutine set_up_ALE_sponge_field_varying(filename, fieldname, Time, G, GV, US,
   CS%Ref_val(CS%fldno)%long_name = long_name
   CS%Ref_val(CS%fldno)%unit = unit
   fld_sz(1:4) = -1
-  call get_external_field_info(CS%Ref_val(CS%fldno)%field, size=fld_sz)
+  call get_external_field_info(CS%Ref_val(CS%fldno)%field, size=fld_sz, axes=CS%Ref_val(CS%fldno)%axes_data)
   nz_data = fld_sz(3)
   CS%Ref_val(CS%fldno)%nz_data = nz_data !< individual sponge fields may reside on a different vertical grid
   CS%Ref_val(CS%fldno)%num_tlevs = fld_sz(4)
@@ -857,8 +896,8 @@ subroutine set_up_ALE_sponge_vel_field_varying(filename_u, fieldname_u, filename
 
   override =.true.
 
-  isd = G%isd; ied = G%ied; jsd = G%jsd; jed = G%jed
-  isdB = G%isdB; iedB = G%iedB; jsdB = G%jsdB; jedB = G%jedB
+  isd = G%isd ; ied = G%ied ; jsd = G%jsd ; jed = G%jed
+  isdB = G%isdB ; iedB = G%iedB ; jsdB = G%jsdB ; jedB = G%jedB
   ! get a unique id for this field which will allow us to return an array
   ! containing time-interpolated values from an external file corresponding
   ! to the current model date.
@@ -868,7 +907,7 @@ subroutine set_up_ALE_sponge_vel_field_varying(filename_u, fieldname_u, filename
     CS%Ref_val_u%field = init_external_field(filename_u, fieldname_u)
   endif
   fld_sz(1:4) = -1
-  call get_external_field_info(CS%Ref_val_u%field, size=fld_sz)
+  call get_external_field_info(CS%Ref_val_u%field, size=fld_sz, axes=CS%Ref_val_u%axes_data)
   CS%Ref_val_u%nz_data = fld_sz(3)
   CS%Ref_val_u%num_tlevs = fld_sz(4)
   CS%Ref_val_u%scale = US%m_s_to_L_T ; if (present(scale)) CS%Ref_val_u%scale = scale
@@ -879,7 +918,7 @@ subroutine set_up_ALE_sponge_vel_field_varying(filename_u, fieldname_u, filename
     CS%Ref_val_v%field = init_external_field(filename_v, fieldname_v)
   endif
   fld_sz(1:4) = -1
-  call get_external_field_info(CS%Ref_val_v%field, size=fld_sz)
+  call get_external_field_info(CS%Ref_val_v%field, size=fld_sz, axes=CS%Ref_val_v%axes_data)
   CS%Ref_val_v%nz_data = fld_sz(3)
   CS%Ref_val_v%num_tlevs = fld_sz(4)
   CS%Ref_val_v%scale = US%m_s_to_L_T ; if (present(scale)) CS%Ref_val_v%scale = scale
@@ -936,7 +975,6 @@ subroutine apply_ALE_sponge(h, tv, dt, G, GV, US, CS, Time)
                                                         ! edges in the input file [Z ~> m]
   real :: missing_value  ! The missing value in the input data field [various]
   real :: Idt      ! The inverse of the timestep [T-1 ~> s-1]
-  real :: dz_neglect, dz_neglect_edge ! Negligible layer extents [Z ~> m]
   real :: zTopOfCell, zBottomOfCell ! Interface heights (positive upward) in the input dataset [Z ~> m].
   real :: sp_val_u ! Interpolation of sp_val to u-points, often a velocity in [L T-1 ~> m s-1]
   real :: sp_val_v ! Interpolation of sp_val to v-points, often a velocity in [L T-1 ~> m s-1]
@@ -947,23 +985,13 @@ subroutine apply_ALE_sponge(h, tv, dt, G, GV, US, CS, Time)
 
   Idt = 1.0/dt
 
-  if (CS%remap_answer_date >= 20190101) then
-    dz_neglect = GV%dZ_subroundoff ; dz_neglect_edge = GV%dZ_subroundoff
-  elseif (GV%Boussinesq) then
-    dz_neglect = US%m_to_Z*1.0e-30 ; dz_neglect_edge = US%m_to_Z*1.0e-10
-  elseif (GV%semi_Boussinesq) then
-    dz_neglect = GV%kg_m2_to_H*GV%H_to_Z*1.0e-30 ; dz_neglect_edge = GV%kg_m2_to_H*GV%H_to_Z*1.0e-10
-  else
-    dz_neglect = GV%dZ_subroundoff ; dz_neglect_edge = GV%dZ_subroundoff
-  endif
-
   if (CS%time_varying_sponges) then
     do m=1,CS%fldno
       nz_data = CS%Ref_val(m)%nz_data
       call horiz_interp_and_extrap_tracer(CS%Ref_val(m)%field, Time, G, sp_val, &
                 mask_z, z_in, z_edges_in, missing_value, &
                 scale=CS%Ref_val(m)%scale, spongeOnGrid=CS%SpongeDataOngrid, m_to_Z=US%m_to_Z, &
-                answer_date=CS%hor_regrid_answer_date)
+                answer_date=CS%hor_regrid_answer_date, axes=CS%Ref_val(m)%axes_data)
       allocate( dz_src(nz_data) )
       allocate( tmpT1d(nz_data) )
       do c=1,CS%num_col
@@ -1024,12 +1052,11 @@ subroutine apply_ALE_sponge(h, tv, dt, G, GV, US, CS, Time)
         enddo
       endif
       if (CS%time_varying_sponges) then
-
         call remapping_core_h(CS%remap_cs, nz_data, CS%Ref_val(m)%dz(1:nz_data,c), tmp_val2, &
-             CS%nz, dz_col, tmp_val1, dz_neglect, dz_neglect_edge)
+             CS%nz, dz_col, tmp_val1)
       else
         call remapping_core_h(CS%remap_cs, nz_data, CS%Ref_dz%p(1:nz_data,c), tmp_val2, &
-             CS%nz, dz_col, tmp_val1, dz_neglect, dz_neglect_edge)
+             CS%nz, dz_col, tmp_val1)
       endif
       !Backward Euler method
       if (CS%id_sp_tendency(m) > 0) tmp(i,j,1:nz) = CS%var(m)%p(i,j,1:nz)
@@ -1053,7 +1080,7 @@ subroutine apply_ALE_sponge(h, tv, dt, G, GV, US, CS, Time)
       call horiz_interp_and_extrap_tracer(CS%Ref_val_u%field, Time, G, sp_val, &
                 mask_z, z_in, z_edges_in, missing_value, &
                 scale=CS%Ref_val_u%scale, spongeOnGrid=CS%SpongeDataOngrid, m_to_Z=US%m_to_Z, &
-                answer_date=CS%hor_regrid_answer_date)
+                answer_date=CS%hor_regrid_answer_date, axes=CS%Ref_val_u%axes_data)
 
       ! Initialize mask_z halos to zero before pass_var, in case of no update
       mask_z(G%isc-1, G%jsc:G%jec, :) = 0.
@@ -1062,7 +1089,7 @@ subroutine apply_ALE_sponge(h, tv, dt, G, GV, US, CS, Time)
       call pass_var(mask_z, G%Domain, To_All+Omit_Corners, halo=1)
 
       allocate(mask_u(G%isdB:G%iedB,G%jsd:G%jed,1:nz_data))
-      do j=G%jsc,G%jec; do I=G%iscB,G%iecB
+      do j=G%jsc,G%jec ; do I=G%iscB,G%iecB
         mask_u(I,j,1:nz_data) = min(mask_z(i,j,1:nz_data),mask_z(i+1,j,1:nz_data))
       enddo ; enddo
 
@@ -1101,7 +1128,7 @@ subroutine apply_ALE_sponge(h, tv, dt, G, GV, US, CS, Time)
       call horiz_interp_and_extrap_tracer(CS%Ref_val_v%field, Time, G, sp_val, &
                 mask_z, z_in, z_edges_in, missing_value, &
                 scale=CS%Ref_val_v%scale, spongeOnGrid=CS%SpongeDataOngrid, m_to_Z=US%m_to_Z,&
-                answer_date=CS%hor_regrid_answer_date)
+                answer_date=CS%hor_regrid_answer_date, axes=CS%Ref_val_v%axes_data)
       ! Initialize mask_z halos to zero before pass_var, in case of no update
       mask_z(G%isc:G%iec, G%jsc-1, :) = 0.
       mask_z(G%isc:G%iec, G%jec+1, :) = 0.
@@ -1109,7 +1136,7 @@ subroutine apply_ALE_sponge(h, tv, dt, G, GV, US, CS, Time)
       call pass_var(mask_z, G%Domain, To_All+Omit_Corners, halo=1)
 
       allocate(mask_v(G%isd:G%ied,G%jsdB:G%jedB,1:nz_data))
-      do J=G%jscB,G%jecB; do i=G%isc,G%iec
+      do J=G%jscB,G%jecB ; do i=G%isc,G%iec
         mask_v(i,J,1:nz_data) = min(mask_z(i,j,1:nz_data),mask_z(i,j+1,1:nz_data))
       enddo ; enddo
 
@@ -1175,10 +1202,10 @@ subroutine apply_ALE_sponge(h, tv, dt, G, GV, US, CS, Time)
       enddo
       if (CS%time_varying_sponges) then
         call remapping_core_h(CS%remap_cs, nz_data, CS%Ref_val_u%dz(1:nz_data,c), tmp_val2, &
-                 CS%nz, dz_col, tmp_val1, dz_neglect, dz_neglect_edge)
+                 CS%nz, dz_col, tmp_val1)
       else
         call remapping_core_h(CS%remap_cs, nz_data, CS%Ref_dzu%p(1:nz_data,c), tmp_val2, &
-                 CS%nz, dz_col, tmp_val1, dz_neglect, dz_neglect_edge)
+                 CS%nz, dz_col, tmp_val1)
       endif
       if (CS%id_sp_u_tendency > 0) tmp_u(i,j,1:nz) = CS%var_u%p(i,j,1:nz)
       !Backward Euler method
@@ -1208,10 +1235,10 @@ subroutine apply_ALE_sponge(h, tv, dt, G, GV, US, CS, Time)
       enddo
       if (CS%time_varying_sponges) then
         call remapping_core_h(CS%remap_cs, nz_data, CS%Ref_val_v%dz(1:nz_data,c), tmp_val2, &
-                 CS%nz, dz_col, tmp_val1, dz_neglect, dz_neglect_edge)
+                 CS%nz, dz_col, tmp_val1)
       else
         call remapping_core_h(CS%remap_cs, nz_data, CS%Ref_dzv%p(1:nz_data,c), tmp_val2, &
-                 CS%nz, dz_col, tmp_val1, dz_neglect, dz_neglect_edge)
+                 CS%nz, dz_col, tmp_val1)
       endif
       if (CS%id_sp_v_tendency > 0) tmp_v(i,j,1:nz) = CS%var_v%p(i,j,1:nz)
       !Backward Euler method
@@ -1301,11 +1328,13 @@ subroutine rotate_ALE_sponge(sponge_in, G_in, sponge, G, GV, US, turns, param_fi
 
   ! Second part: Provide rotated fields for which relaxation is applied
 
-  sponge%fldno = sponge_in%fldno
-
   if (fixed_sponge) then
     allocate(sp_val_in(G_in%isd:G_in%ied, G_in%jsd:G_in%jed, nz_data))
     allocate(sp_val(G%isd:G%ied, G%jsd:G%jed, nz_data))
+    ! For a fixed sponge, sponge%fldno is incremented from 0 in the calls to set_up_ALE_sponge_field.
+    sponge%fldno = 0
+  else
+    sponge%fldno = sponge_in%fldno
   endif
 
   do n=1,sponge_in%fldno
@@ -1358,8 +1387,7 @@ subroutine rotate_ALE_sponge(sponge_in, G_in, sponge, G, GV, US, turns, param_fi
 
   ! TODO: var_u and var_v sponge damping is not yet supported.
   if (associated(sponge_in%var_u%p) .or. associated(sponge_in%var_v%p)) &
-    call MOM_error(FATAL, "Rotation of ALE sponge velocities is not yet " &
-      // "implemented.")
+    call MOM_error(FATAL, "Rotation of ALE sponge velocities is not yet implemented.")
 
   ! Transfer any existing diag_CS reference pointer
   sponge%diag => sponge_in%diag

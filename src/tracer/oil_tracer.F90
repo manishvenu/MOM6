@@ -466,7 +466,7 @@ subroutine oil_tracer_surface_state(sfc_state, h, G, GV, CS)
       !   This call loads the surface values into the appropriate array in the
       ! coupler-type structure.
       call set_coupler_type_data(CS%tr(:,:,1,m), CS%ind_tr(m), sfc_state%tr_fields, &
-                   idim=(/isd, is, ie, ied/), jdim=(/jsd, js, je, jed/) )
+                   idim=(/isd, is, ie, ied/), jdim=(/jsd, js, je, jed/), turns=G%HI%turns)
     enddo
   endif
 
@@ -494,7 +494,7 @@ end subroutine oil_tracer_end
 !!
 !!    This tracer package was central to the simulations used by Adcroft et al.,
 !!  GRL 2010, to prove that the Deepwater Horizon spill was an important regional
-!!  event, with implications for dissolved oxygen levels in the Gulf of Mexico,
-!!  but not one that would directly impact the East Coast of the U.S.
+!!  event, with implications for dissolved oxygen levels in certains regions,
+!!  see above reference for details.
 
 end module oil_tracer

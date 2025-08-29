@@ -62,6 +62,7 @@ use MOM_surface_forcing_nuopc, only : convert_IOB_to_forces, ice_ocn_bnd_type_ch
 use MOM_surface_forcing_nuopc, only : ice_ocean_boundary_type, surface_forcing_CS
 use MOM_surface_forcing_nuopc, only : forcing_save_restart
 use get_stochy_pattern_mod,  only : write_stoch_restart_ocn
+use stochy_data_mod,         only : stoch_restfile
 use iso_fortran_env,           only : int64
 
 #include <MOM_memory.h>
@@ -148,6 +149,7 @@ type, public :: ocean_state_type ; private
   logical :: use_ice_shelf    !< If true, the ice shelf model is enabled.
   logical,public :: use_waves !< If true use wave coupling.
   character(len=40) :: wave_method !< Wave coupling method.
+  logical,public :: use_MARBL !< If true, use MARBL tracers.
 
   logical :: icebergs_alter_ocean !< If true, the icebergs can change ocean the
                               !! ocean dynamics and forcing fluxes.
@@ -177,11 +179,12 @@ type, public :: ocean_state_type ; private
                               !! steps can span multiple coupled time steps.
   logical :: diabatic_first   !< If true, apply diabatic and thermodynamic
                               !! processes before time stepping the dynamics.
-  logical :: do_sppt         !< If true, stochastically perturb the diabatic and
-                             !! write restarts
-  logical :: pert_epbl       !< If true, then randomly perturb the KE dissipation and
-                             !! genration termsand write restarts
-
+  logical :: do_sppt          !< If true, stochastically perturb the diabatic
+                              !! tendencies and write restarts
+  logical :: pert_epbl        !< If true, then randomly perturb the KE dissipation and
+                              !! generation terms and write restarts
+  logical :: do_skeb          !< If true, stochastically perturb the ocean lateral
+                              !! velocity and write restarts
   real :: eps_omesh           !< Max allowable difference between ESMF mesh and MOM6
                               !! domain coordinates
 
@@ -256,7 +259,6 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
                       !! min(HFrz, OBLD), where OBLD is the boundary layer depth.
                       !! If HFrz <= 0 (default), melt potential will not be computed.
   logical :: use_melt_pot !< If true, allocate melt_potential array
-  logical :: use_MARBL  !< If true, allocate surface co2 array
 
 
 ! This include declares and sets the variable "version".
@@ -266,6 +268,7 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
   integer :: secs, days
   type(param_file_type) :: param_file !< A structure to parse for run-time parameters
   logical :: use_temperature
+  integer :: i, k
 
   call callTree_enter("ocean_model_init(), ocean_model_MOM.F90")
   if (associated(OS)) then
@@ -281,6 +284,13 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
   call time_interp_external_init
 
   OS%Time = Time_in
+  if(present(input_restart_file)) then
+      k = len_trim(input_restart_file)
+      i = index(input_restart_file, '.r.')
+      if (i>0) then
+         stoch_restfile = input_restart_file(1:i)//'r_stoch'//input_restart_file(i+2:k)
+      endif
+  endif
   call initialize_MOM(OS%Time, Time_init, param_file, OS%dirs, OS%MOM_CSp, &
                       Time_in, offline_tracer_mode=OS%offline_tracer_mode, &
                       input_restart_file=input_restart_file, &
@@ -380,14 +390,14 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
 
   call get_param(param_file, mdl, "USE_WAVES", OS%Use_Waves, &
        "If true, enables surface wave modules.", default=.false.)
-  call get_param(param_file, mdl, "USE_MARBL_TRACERS", use_MARBL, &
+  call get_param(param_file, mdl, "USE_MARBL_TRACERS", OS%use_MARBL, &
                  default=.false., do_not_log=.true.)
 
   !   Consider using a run-time flag to determine whether to do the diagnostic
   ! vertical integrals, since the related 3-d sums are not negligible in cost.
   call allocate_surface_state(OS%sfc_state, OS%grid, use_temperature, &
                               do_integrals=.true., gas_fields_ocn=gas_fields_ocn, &
-                              use_meltpot=use_melt_pot, use_marbl_tracers=use_MARBL)
+                              use_meltpot=use_melt_pot, use_MARBL_tracers=OS%use_MARBL)
 
   call surface_forcing_init(Time_in, OS%grid, OS%US, param_file, OS%diag, &
                             OS%forcing_CSp, OS%restore_salinity, OS%restore_temp, OS%use_waves)
@@ -443,6 +453,10 @@ subroutine ocean_model_init(Ocean_sfc, OS, Time_init, Time_in, gas_fields_ocn, i
                  "If true, then stochastically perturb the kinetic energy "//&
                  "production and dissipation terms.  Amplitude and correlations are "//&
                  "controlled by the nam_stoch namelist in the UFS model only.", &
+                 default=.false.)
+  call get_param(param_file, mdl, "DO_SKEB", OS%do_skeb, &
+                 "If true, then stochastically perturb the currents "//&
+                 "using the stochastic kinetic energy backscatter scheme.",&
                  default=.false.)
 
   call close_param_file(param_file)
@@ -770,8 +784,8 @@ subroutine ocean_model_restart(OS, timestamp, restartname, stoch_restartname, nu
     endif
   endif
   if (present(stoch_restartname)) then
-    if (OS%do_sppt .OR. OS%pert_epbl) then
-      call write_stoch_restart_ocn('RESTART/'//trim(stoch_restartname))
+    if (OS%do_sppt .OR. OS%pert_epbl .OR. OS%do_skeb) then
+      call write_stoch_restart_ocn(trim(stoch_restartname))
     endif
   endif
 
@@ -1057,7 +1071,7 @@ end subroutine ocean_model_flux_init
 
 !> This interface allows certain properties that are stored in the ocean_state_type to be
 !! obtained.
-subroutine query_ocean_state(OS, use_waves, NumWaveBands, Wavenumbers, unscale, wave_method)
+subroutine query_ocean_state(OS, use_waves, NumWaveBands, Wavenumbers, unscale, wave_method, use_MARBL)
   type(ocean_state_type),       intent(in)  :: OS      !< The structure with the complete ocean state
   logical,            optional, intent(out) :: use_waves !< Indicates whether surface waves are in use
   integer,            optional, intent(out) :: NumWaveBands !< If present, this gives the number of
@@ -1067,6 +1081,7 @@ subroutine query_ocean_state(OS, use_waves, NumWaveBands, Wavenumbers, unscale, 
   logical,            optional, intent(in)  :: unscale !< If present and true, undo any dimensional
                                                        !! rescaling and return dimensional values in MKS units
   character(len=40),  optional, intent(out) :: wave_method !< Wave coupling method.
+  logical,            optional, intent(out) :: use_MARBL !< Indicates whether MARBL is in use.
 
   logical :: undo_scaling
   undo_scaling = .false. ; if (present(unscale)) undo_scaling = unscale
@@ -1079,6 +1094,7 @@ subroutine query_ocean_state(OS, use_waves, NumWaveBands, Wavenumbers, unscale, 
     call query_wave_properties(OS%Waves, WaveNumbers=WaveNumbers)
   endif
   if (present(wave_method)) wave_method = OS%wave_method
+  if (present(use_MARBL)) use_MARBL = OS%use_MARBL
 
 end subroutine query_ocean_state
 

@@ -44,14 +44,15 @@ end interface
 contains
 
 !> Write to the terminal some basic statistics about the k-th level of an array
-subroutine myStats(array, missing, G, k, mesg, scale, full_halo)
+subroutine myStats(array, missing, G, k, mesg, unscale, full_halo)
   type(ocean_grid_type), intent(in) :: G     !< Ocean grid type
   real, dimension(SZI_(G),SZJ_(G)), &
                          intent(in) :: array !< input array in arbitrary units [A ~> a]
   real,                  intent(in) :: missing !< missing value in arbitrary units [A ~> a]
   integer,               intent(in) :: k     !< Level to calculate statistics for
   character(len=*),      intent(in) :: mesg  !< Label to use in message
-  real,        optional, intent(in) :: scale !< A scaling factor for output [a A-1 ~> 1]
+  real,        optional, intent(in) :: unscale !< A scaling factor for output that countacts
+                                             !! any internal dimesional scaling [a A-1 ~> 1]
   logical,     optional, intent(in) :: full_halo !< If present and true, test values on the whole
                                              !! array rather than just the computational domain.
   ! Local variables
@@ -62,7 +63,7 @@ subroutine myStats(array, missing, G, k, mesg, scale, full_halo)
   logical :: found
   character(len=120) :: lMesg
 
-  scl = 1.0 ; if (present(scale)) scl = scale
+  scl = 1.0 ; if (present(unscale)) scl = unscale
   minA = 9.E24 / scl ; maxA = -9.E24 / scl ; found = .false.
 
   is = G%isc ; ie = G%iec ; js = G%jsc ; je = G%jec
@@ -557,7 +558,7 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam, recnum, G, tr
       endif
 
       if (debug) then
-        call myStats(tr_inp, missing_value, G, k, 'Tracer from file', scale=I_scale, full_halo=.true.)
+        call myStats(tr_inp, missing_value, G, k, 'Tracer from file', unscale=I_scale, full_halo=.true.)
       endif
 
       call run_horiz_interp(Interp, tr_inp, tr_out(is:ie,js:je), missing_value=missing_value)
@@ -585,12 +586,12 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam, recnum, G, tr
     call pass_var(good, G%Domain)
 
     if (debug) then
-      call myStats(tr_out, missing_value, G, k, 'variable from horiz_interp()', scale=I_scale)
+      call myStats(tr_out, missing_value, G, k, 'variable from horiz_interp()', unscale=I_scale)
     endif
 
     ! Horizontally homogenize data to produce perfectly "flat" initial conditions
     if (PRESENT(homogenize)) then ; if (homogenize) then
-      call homogenize_field(tr_out, mask_out, G, scale, answer_date)
+      call homogenize_field(tr_out, G, tmp_scale=I_scale, weights=mask_out, answer_date=answer_date)
     endif ; endif
 
     ! tr_out contains input z-space data on the model grid with missing values
@@ -602,7 +603,7 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam, recnum, G, tr
 
     call fill_miss_2d(tr_outf, good2, fill2, tr_prev, G, dtr_iter_stop, answer_date=ans_date)
     if (debug) then
-      call myStats(tr_outf, missing_value, G, k, 'field from fill_miss_2d()', scale=I_scale)
+      call myStats(tr_outf, missing_value, G, k, 'field from fill_miss_2d()', unscale=I_scale)
     endif
 
     tr_z(:,:,k) = tr_outf(:,:) * G%mask2dT(:,:)
@@ -611,7 +612,7 @@ subroutine horiz_interp_and_extrap_tracer_record(filename, varnam, recnum, G, tr
     tr_prev(:,:) = tr_z(:,:,k)
 
     if (debug) then
-      call hchksum(tr_prev, 'field after fill ', G%HI, scale=I_scale)
+      call hchksum(tr_prev, 'field after fill ', G%HI, unscale=I_scale)
     endif
 
   enddo ! kd
@@ -627,7 +628,8 @@ end subroutine horiz_interp_and_extrap_tracer_record
 subroutine horiz_interp_and_extrap_tracer_fms_id(field, Time, G, tr_z, mask_z, &
                                                  z_in, z_edges_in, missing_value, scale, &
                                                  homogenize, spongeOngrid, m_to_Z, &
-                                                 answers_2018, tr_iter_tol, answer_date)
+                                                 answers_2018, tr_iter_tol, answer_date, &
+                                                 axes)
 
   type(external_field), intent(in)     :: field      !< Handle for the time interpolated field
   type(time_type),       intent(in)    :: Time       !< A FMS time type
@@ -663,6 +665,7 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(field, Time, G, tr_z, mask_z, &
                                                      !! Dates before 20190101 give the same  answers
                                                      !! as the code did in late 2018, while later versions
                                                      !! add parentheses for rotational symmetry.
+  type(axis_info), allocatable, dimension(:), optional, intent(inout) :: axes !< Axis types for the input data
 
   ! Local variables
   ! In the following comments, [A] is used to indicate the arbitrary, possibly rescaled units of the
@@ -742,7 +745,16 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(field, Time, G, tr_z, mask_z, &
 
   call cpu_clock_begin(id_clock_read)
 
-  call get_external_field_info(field, size=fld_sz, axes=axes_data, missing=missing_val_in)
+  if (present(axes) .and. allocated(axes)) then
+    call get_external_field_info(field, size=fld_sz, missing=missing_val_in)
+    axes_data = axes
+  else
+    call get_external_field_info(field, size=fld_sz, axes=axes_data, missing=missing_val_in)
+    if (present(axes)) then
+      allocate(axes(4))
+      axes = axes_data
+    endif
+  endif
   missing_value = scale*missing_val_in
 
   verbosity = MOM_get_verbosity()
@@ -863,7 +875,7 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(field, Time, G, tr_z, mask_z, &
       endif
 
       if (debug) then
-        call myStats(tr_inp, missing_value, G, k, 'Tracer from file', scale=I_scale, full_halo=.true.)
+        call myStats(tr_inp, missing_value, G, k, 'Tracer from file', unscale=I_scale, full_halo=.true.)
       endif
 
       tr_out(:,:) = 0.0
@@ -891,12 +903,12 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(field, Time, G, tr_z, mask_z, &
       call pass_var(good, G%Domain)
 
       if (debug) then
-        call myStats(tr_out, missing_value, G, k, 'variable from horiz_interp()', scale=I_scale)
+        call myStats(tr_out, missing_value, G, k, 'variable from horiz_interp()', unscale=I_scale)
       endif
 
       ! Horizontally homogenize data to produce perfectly "flat" initial conditions
       if (PRESENT(homogenize)) then ; if (homogenize) then
-        call homogenize_field(tr_out, mask_out, G, scale, answer_date)
+        call homogenize_field(tr_out, G, tmp_scale=I_scale, weights=mask_out, answer_date=answer_date)
       endif ; endif
 
       ! tr_out contains input z-space data on the model grid with missing values
@@ -909,8 +921,8 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(field, Time, G, tr_z, mask_z, &
       call fill_miss_2d(tr_outf, good2, fill2, tr_prev, G, dtr_iter_stop, answer_date=ans_date)
 
 !     if (debug) then
-!       call hchksum(tr_outf, 'field from fill_miss_2d ', G%HI, scale=I_scale)
-!       call myStats(tr_outf, missing_value, G, k, 'field from fill_miss_2d()', scale=I_scale)
+!       call hchksum(tr_outf, 'field from fill_miss_2d ', G%HI, unscale=I_scale)
+!       call myStats(tr_outf, missing_value, G, k, 'field from fill_miss_2d()', unscale=I_scale)
 !     endif
 
       tr_z(:,:,k) = tr_outf(:,:) * G%mask2dT(:,:)
@@ -918,7 +930,7 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(field, Time, G, tr_z, mask_z, &
       tr_prev(:,:) = tr_z(:,:,k)
 
       if (debug) then
-        call hchksum(tr_prev, 'field after fill ', G%HI, scale=I_scale)
+        call hchksum(tr_prev, 'field after fill ', G%HI, unscale=I_scale)
       endif
 
     enddo ! kd
@@ -938,14 +950,15 @@ subroutine horiz_interp_and_extrap_tracer_fms_id(field, Time, G, tr_z, mask_z, &
 end subroutine horiz_interp_and_extrap_tracer_fms_id
 
 !> Replace all values of a 2-d field with the weighted average over the valid points.
-subroutine homogenize_field(field, weight, G, scale, answer_date, wt_unscale)
+subroutine homogenize_field(field, G, tmp_scale, weights, answer_date, wt_unscale)
   type(ocean_grid_type),            intent(inout) :: G      !< Ocean grid type
   real, dimension(SZI_(G),SZJ_(G)), intent(inout) :: field  !< The tracer on the model grid in arbitrary units [A ~> a]
-  real, dimension(SZI_(G),SZJ_(G)), intent(in)    :: weight !< The weights for the tracer in arbitrary units that
+  real,                   optional, intent(in)    :: tmp_scale !< A temporary rescaling factor for the
+                                                            !! variable that is reversed in the
+                                                            !! return value [a A-1 ~> 1]
+  real, dimension(SZI_(G),SZJ_(G)), &
+                          optional, intent(in)    :: weights !< The weights for the tracer in arbitrary units that
                                                             !! typically differ from those used by field [B ~> b]
-  real,                             intent(in)    :: scale  !< A rescaling factor that has been used for the
-                                                            !! variable and has to be undone before the
-                                                            !! reproducing sums [A a-1 ~> 1]
   integer,                optional, intent(in)    :: answer_date !< The vintage of the expressions in the code.
                                                             !! Dates before 20230101 use non-reproducing sums
                                                             !! in their averages, while later versions use
@@ -959,12 +972,11 @@ subroutine homogenize_field(field, weight, G, scale, answer_date, wt_unscale)
   ! In the following comments, [A] and [B] are used to indicate the arbitrary, possibly rescaled
   ! units of the input field and the weighting array, while [a] and [b] indicate the corresponding
   ! unscaled (e.g., mks) units that can be used with the reproducing sums
-  real, dimension(SZI_(G),SZJ_(G)) :: field_for_Sums  ! The field times the weights with the scaling undone [a b]
-  real, dimension(SZI_(G),SZJ_(G)) :: wts_for_Sums    ! A copy of the wieghts with the scaling undone [b]
+  real, dimension(G%isc:G%iec, G%jsc:G%jec) :: field_for_Sums  ! The field times the weights [A B ~> a b]
+  real, dimension(G%isc:G%iec, G%jsc:G%jec) :: weight ! A copy of weights, if it is present, or the
+                      ! tracer-point grid mask if it weights is absent [B ~> b]
   real :: var_unscale ! The reciprocal of the scaling factor for the field and weights [a b A-1 B-1 ~> 1]
-  real :: wt_descale  ! A factor that undoes any dimensional scaling of the weights so that they
-                      ! can be used with reproducing sums [b B-1 ~> 1]
-  real :: wt_sum      ! The sum of the weights, in [b] (reproducing) or [B ~> b] (non-reproducing)
+  real :: wt_sum      ! The sum of the weights, in [B ~> b]
   real :: varsum      ! The weighted sum of field being averaged [A B ~> a b]
   real :: varAvg      ! The average of the field [A ~> a]
   logical :: use_repro_sums  ! If true, use reproducing sums.
@@ -976,23 +988,27 @@ subroutine homogenize_field(field, weight, G, scale, answer_date, wt_unscale)
 
   use_repro_sums = .false. ; if (present(answer_date)) use_repro_sums = (answer_date >= 20230101)
 
-  if (scale == 0.0) then
-    ! This seems like an unlikely case to ever be used, but dealing with it is better than having NaNs arise?
-    varAvg = 0.0
-  elseif (use_repro_sums) then
-    wt_descale = 1.0 ; if (present(wt_unscale)) wt_descale = wt_unscale
-    var_unscale = wt_descale / scale
-
-    field_for_Sums(:,:) = 0.0
-    wts_for_Sums(:,:) = 0.0
+  if (present(weights)) then
     do j=js,je ; do i=is,ie
-      wts_for_Sums(i,j) = wt_descale * weight(i,j)
-      field_for_Sums(i,j) = var_unscale * (field(i,j) * weight(i,j))
+      weight(i,j) = weights(i,j)
+    enddo ; enddo
+  else
+    do j=js,je ; do i=is,ie
+      weight(i,j) = G%mask2dT(i,j)
+    enddo ; enddo
+  endif
+
+  if (use_repro_sums) then
+    var_unscale = 1.0 ; if (present(tmp_scale)) var_unscale = tmp_scale
+    if (present(wt_unscale)) var_unscale = wt_unscale * var_unscale
+
+    do j=js,je ; do i=is,ie
+      field_for_Sums(i,j) = field(i,j) * weight(i,j)
     enddo ; enddo
 
-    wt_sum = reproducing_sum(wts_for_Sums)
+    wt_sum = reproducing_sum(weight, unscale=wt_unscale)
     if (abs(wt_sum) > 0.0) &
-      varAvg = reproducing_sum(field_for_Sums) * (scale / wt_sum)
+      varAvg = reproducing_sum(field_for_Sums, unscale=var_unscale) * (1.0 / wt_sum)
 
   else  ! Do the averages with order-dependent sums to reproduce older answers.
     wt_sum = 0 ; varsum = 0.
@@ -1009,7 +1025,11 @@ subroutine homogenize_field(field, weight, G, scale, answer_date, wt_unscale)
       call sum_across_PEs(varsum)
       varAvg = varsum / wt_sum
     endif
+
   endif
+
+  ! This seems like an unlikely case to ever be used, but it is needed to recreate previous behavior.
+  if (present(tmp_scale)) then ; if (tmp_scale == 0.0) varAvg = 0.0 ; endif
 
   field(:,:) = varAvg
 

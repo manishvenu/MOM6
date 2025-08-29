@@ -72,6 +72,9 @@ NK = 10                         !   [nondim]
 ENABLE_THERMODYNAMICS = False   !   [Boolean] default = True
                                 ! If true, Temperature and salinity are used as state
                                 ! variables.
+USE_POROUS_BARRIER = False      !   [Boolean] default = False
+                                ! If true, use porous barrier to constrain the widths and face areas at the
+                                ! edges of the grid cells.
 DT = 120.0                      !   [s]
                                 ! The (baroclinic) dynamics time step.  The time-step that
                                 ! is actually used will be an integer fraction of the
@@ -477,3 +480,8 @@ KAPPA_SHEAR_ITER_BUG = True     !   [Boolean] default = True
 KAPPA_SHEAR_ALL_LAYER_TKE_BUG = True !   [Boolean] default = True
 GUST_CONST = 0.02               !   [Pa] default = 0.02
 FIX_USTAR_GUSTLESS_BUG = False  !   [Boolean] default = False
+
+! Explicitly use the defaults from early 2025
+VISC_REM_BUG = True
+DRAG_DIFFUSIVITY_ANSWER_DATE = 20250101
+FRICTWORK_BUG = True

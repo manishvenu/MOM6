@@ -31,11 +31,11 @@ public rotate_surface_state
 
 !> A structure for creating arrays of pointers to 3D arrays
 type, public :: p3d
-  real, dimension(:,:,:), pointer :: p => NULL() !< A pointer to a 3D array
+  real, dimension(:,:,:), pointer :: p => NULL() !< A pointer to a 3D array [various]
 end type p3d
 !> A structure for creating arrays of pointers to 2D arrays
 type, public :: p2d
-  real, dimension(:,:), pointer :: p => NULL() !< A pointer to a 2D array
+  real, dimension(:,:), pointer :: p => NULL() !< A pointer to a 2D array [various]
 end type p2d
 
 !> Pointers to various fields which may be used describe the surface state of MOM, and which
@@ -101,8 +101,9 @@ type, public :: thermo_var_ptrs
   ! These arrays are accumulated fluxes for communication with other components.
   real, dimension(:,:), pointer :: frazil => NULL()
                          !< The energy needed to heat the ocean column to the
-                         !! freezing point since calculate_surface_state was2
+                         !! freezing point since calculate_surface_state was
                          !! last called [Q Z R ~> J m-2].
+  logical :: frazil_was_reset !< If true, frazil has not accumulated since it was last reset.
   real, dimension(:,:), pointer :: salt_deficit => NULL()
                          !<   The salt needed to maintain the ocean column
                          !! at a minimum salinity of MIN_SALINITY since the last time
@@ -181,16 +182,40 @@ type, public :: accel_diag_ptrs
                            !! in du_dt_visc) [L T-2 ~> m s-2]
     dv_dt_str => NULL(), & !< Meridional acceleration due to the surface stress (included
                            !! in dv_dt_visc) [L T-2 ~> m s-2]
-    du_dt_dia => NULL(), & !< Zonal acceleration due to diapycnal  mixing [L T-2 ~> m s-2]
-    dv_dt_dia => NULL(), & !< Meridional acceleration due to diapycnal  mixing [L T-2 ~> m s-2]
+    du_dt_dia => NULL(), & !< Zonal acceleration due to diapycnal mixing [L T-2 ~> m s-2]
+    dv_dt_dia => NULL(), & !< Meridional acceleration due to diapycnal mixing [L T-2 ~> m s-2]
     u_accel_bt => NULL(), &!< Pointer to the zonal barotropic-solver acceleration [L T-2 ~> m s-2]
-    v_accel_bt => NULL()   !< Pointer to the meridional barotropic-solver acceleration [L T-2 ~> m s-2]
+    v_accel_bt => NULL(), &!< Pointer to the meridional barotropic-solver acceleration [L T-2 ~> m s-2]
+
+    ! sal_[uv] and tide_[uv] are 3D fields because of their baroclinic component in Boussinesq mode.
+    sal_u => NULL(), &     !< Zonal acceleration due to self-attraction and loading [L T-2 ~> m s-2]
+    sal_v => NULL(), &     !< Meridional acceleration due to self-attraction and loading [L T-2 ~> m s-2]
+    tides_u => NULL(), &    !< Zonal acceleration due to astronomical tidal forcing [L T-2 ~> m s-2]
+    tides_v => NULL()       !< Meridional acceleration due to astronomical tidal forcing [L T-2 ~> m s-2]
   real, pointer, dimension(:,:,:) :: du_other => NULL()
                            !< Zonal velocity changes due to any other processes that are
                            !! not due to any explicit accelerations [L T-1 ~> m s-1].
   real, pointer, dimension(:,:,:) :: dv_other => NULL()
                            !< Meridional velocity changes due to any other processes that are
                            !! not due to any explicit accelerations [L T-1 ~> m s-1].
+
+  ! Sub-terms of [uv]_accel_bt
+  real, pointer :: bt_pgf_u(:,:,:) => NULL() !< Zonal acceleration due to anomalous pressure gradient from
+                                             !! barotropic solver, a 3D component of u_accel_bt that includes both
+                                             !! PFuBT and the offset term for central differencing timestepping
+                                             !! [L T-2 ~> m s-2]
+  real, pointer :: bt_pgf_v(:,:,:) => NULL() !< Meridional acceleration due to anomalous pressure gradient from
+                                             !! barotropic solver, a 3D component of v_accel_bt that includes both
+                                             !! PFvBT and the offset term for central differencing timestepping
+                                             !! [L T-2 ~> m s-2]
+  real, pointer :: bt_cor_u(:,:) => NULL()   !< Zonal acceleration due to anomalous Coriolis force from barotropic
+                                             !! solver, a 2D component of u_accel_bt [L T-2 ~> m s-2]
+  real, pointer :: bt_cor_v(:,:) => NULL()   !< Meridional acceleration due to anomalous Coriolis force from barotropic
+                                             !! solver, a 2D component of v_accel_bt [L T-2 ~> m s-2]
+  real, pointer :: bt_lwd_u(:,:) => NULL()   !< Zonal acceleration due to linear wave drag from barotropic solver,
+                                             !! a 2D component of u_accel_bt [L T-2 ~> m s-2]
+  real, pointer :: bt_lwd_v(:,:) => NULL()   !< Meridional acceleration due to linear wave drag from barotropic solver,
+                                             !! a 2D component of v_accel_bt [L T-2 ~> m s-2]
 
   ! These accelerations are sub-terms included in the accelerations above.
   real, pointer :: gradKEu(:,:,:) => NULL()  !< gradKEu = - d/dx(u2) [L T-2 ~> m s-2]
@@ -229,8 +254,6 @@ end type cont_diag_ptrs
 
 !> Vertical viscosities, drag coefficients, and related fields.
 type, public :: vertvisc_type
-  real :: Prandtl_turb       !< The Prandtl number for the turbulent diffusion
-                             !! that is captured in Kd_shear [nondim].
   real, allocatable, dimension(:,:) :: &
     bbl_thick_u, & !< The bottom boundary layer thickness at the u-points [Z ~> m].
     bbl_thick_v, & !< The bottom boundary layer thickness at the v-points [Z ~> m].
@@ -238,8 +261,11 @@ type, public :: vertvisc_type
     kv_bbl_v, &    !< The bottom boundary layer viscosity at the v-points [H Z T-1 ~> m2 s-1 or Pa s]
     ustar_BBL, &   !< The turbulence velocity in the bottom boundary layer at
                    !! h points [H T-1 ~> m s-1 or kg m-2 s-1].
-    TKE_BBL, &     !< A term related to the bottom boundary layer source of turbulent kinetic
-                   !! energy, currently in [H Z2 T-3 ~> m3 s-3 or W m-2].
+    BBL_meanKE_loss, & !< The viscous loss of mean kinetic energy in the bottom boundary layer
+                   !! [H L2 T-3 ~> m3 s-3 or W m-2].
+    BBL_meanKE_loss_sqrtCd, & !< The viscous loss of mean kinetic energy in the bottom boundary layer
+                   !! divided by the square root of the drag coefficient [H L2 T-3 ~> m3 s-3 or W m-2].
+                   !! This is being set only to retain old answers, and should be phased out.
     taux_shelf, &  !< The zonal stresses on the ocean under shelves [R Z L T-2 ~> Pa].
     tauy_shelf     !< The meridional stresses on the ocean under shelves [R Z L T-2 ~> Pa].
   real, allocatable, dimension(:,:) :: tbl_thick_shelf_u
@@ -324,7 +350,6 @@ type, public :: BT_cont_type
 end type BT_cont_type
 
 !> Container for grids modifying cell metric at porous barriers
-! TODO: rename porous_barrier_type to porous_barrier_type
 type, public :: porous_barrier_type
   ! Each of the following fields has nz layers.
   real, allocatable :: por_face_areaU(:,:,:) !< fractional open area of U-faces [nondim]
@@ -340,14 +365,14 @@ contains
 !! the ocean model. Unused fields are unallocated.
 subroutine allocate_surface_state(sfc_state, G, use_temperature, do_integrals, &
                                   gas_fields_ocn, use_meltpot, use_iceshelves, &
-                                  omit_frazil, use_marbl_tracers)
+                                  omit_frazil, sfc_state_in, turns, use_MARBL_tracers)
   type(ocean_grid_type), intent(in)    :: G                !< ocean grid structure
   type(surface),         intent(inout) :: sfc_state        !< ocean surface state type to be allocated.
   logical,     optional, intent(in)    :: use_temperature  !< If true, allocate the space for thermodynamic variables.
   logical,     optional, intent(in)    :: do_integrals     !< If true, allocate the space for vertically
                                                            !! integrated fields.
   type(coupler_1d_bc_type), &
-               optional, intent(in)    :: gas_fields_ocn  !< If present, this type describes the ocean
+               optional, intent(in)    :: gas_fields_ocn   !< If present, this type describes the
                                               !! ocean and surface-ice fields that will participate
                                               !! in the calculation of additional gas or other
                                               !! tracer fluxes, and can be used to spawn related
@@ -357,10 +382,21 @@ subroutine allocate_surface_state(sfc_state, G, use_temperature, do_integrals, &
                                                            !! under ice shelves.
   logical,     optional, intent(in)    :: omit_frazil      !< If present and false, do not allocate the space to
                                                            !! pass frazil fluxes to the coupler
-  logical,     optional, intent(in)    :: use_marbl_tracers  !< If true, allocate the space for CO2 flux from MARBL
+  type(surface), &
+               optional, intent(in)    :: sfc_state_in     !< If present and its tr_fields are initialized,
+                                              !! this type describes the ocean and surface-ice fields that
+                                              !! will participate in the calculation of additional gas or
+                                              !! other tracer fluxes, and can be used to spawn related
+                                              !! internal variables in the ice model.  If gas_fields_ocn
+                                              !! is present, it is used and tr_fields_in is ignored.
+  integer,     optional, intent(in)    :: turns  !< If present, the number of counterclockwise quarter
+                                                 !! turns to use on the new grid.
+  logical,     optional, intent(in)    :: use_MARBL_tracers  !< If true, allocate the space for CO2 flux from MARBL
 
   ! local variables
   logical :: use_temp, alloc_integ, use_melt_potential, alloc_iceshelves, alloc_frazil, alloc_fco2
+  logical :: even_turns  ! True if turns is absent or even
+  integer :: tr_field_i_mem(4), tr_field_j_mem(4)
   integer :: is, ie, js, je, isd, ied, jsd, jed
   integer :: isdB, iedB, jsdB, jedB
 
@@ -373,7 +409,7 @@ subroutine allocate_surface_state(sfc_state, G, use_temperature, do_integrals, &
   use_melt_potential = .false. ; if (present(use_meltpot)) use_melt_potential = use_meltpot
   alloc_iceshelves = .false. ; if (present(use_iceshelves)) alloc_iceshelves = use_iceshelves
   alloc_frazil = .true. ; if (present(omit_frazil)) alloc_frazil = .not.omit_frazil
-  alloc_fco2 = .false. ; if (present(use_marbl_tracers)) alloc_fco2 = use_marbl_tracers
+  alloc_fco2 = .false. ; if (present(use_MARBL_tracers)) alloc_fco2 = use_MARBL_tracers
 
   if (sfc_state%arrays_allocated) return
 
@@ -409,9 +445,22 @@ subroutine allocate_surface_state(sfc_state, G, use_temperature, do_integrals, &
     allocate(sfc_state%tauy_shelf(isd:ied,JsdB:JedB), source=0.0)
   endif
 
-  if (present(gas_fields_ocn)) &
+  ! The data fields in the coupler_2d_bc_type are never rotated.
+  even_turns = .true. ; if (present(turns)) even_turns = (modulo(turns, 2) == 0)
+  if (even_turns) then
+    tr_field_i_mem(1:4) = (/is,is,ie,ie/) ; tr_field_j_mem(1:4) = (/js,js,je,je/)
+  else
+    tr_field_i_mem(1:4) = (/js,js,je,je/) ; tr_field_j_mem(1:4) = (/is,is,ie,ie/)
+  endif
+  if (present(gas_fields_ocn)) then
     call coupler_type_spawn(gas_fields_ocn, sfc_state%tr_fields, &
-                            (/is,is,ie,ie/), (/js,js,je,je/), as_needed=.true.)
+                            tr_field_i_mem, tr_field_j_mem, as_needed=.true.)
+  elseif (present(sfc_state_in)) then
+    if (coupler_type_initialized(sfc_state_in%tr_fields)) then
+      call coupler_type_spawn(sfc_state_in%tr_fields, sfc_state%tr_fields, &
+                              tr_field_i_mem, tr_field_j_mem, as_needed=.true.)
+    endif
+  endif
 
   if (alloc_fco2) then
     allocate(sfc_state%fco2(isd:ied,jsd:jed), source=0.0)
@@ -447,10 +496,10 @@ end subroutine deallocate_surface_state
 
 !> Rotate the surface state fields from the input to the model indices.
 subroutine rotate_surface_state(sfc_state_in, sfc_state, G, turns)
-  type(surface), intent(in) :: sfc_state_in
-  type(surface), intent(inout) :: sfc_state
-  type(ocean_grid_type), intent(in) :: G
-  integer, intent(in) :: turns
+  type(surface), intent(in) :: sfc_state_in  !< The input unrotated surface state type that is the data source.
+  type(surface), intent(inout) :: sfc_state  !< The rotated surface state type whose arrays will be filled in
+  type(ocean_grid_type), intent(in) :: G     !< The ocean grid structure
+  integer, intent(in) :: turns   !< The number of counterclockwise quarter turns to use on the rotated grid.
 
   logical :: use_temperature, do_integrals, use_melt_potential, use_iceshelves
 
@@ -463,13 +512,9 @@ subroutine rotate_surface_state(sfc_state_in, sfc_state, G, turns)
       .and. allocated(sfc_state_in%tauy_shelf)
 
   if (.not. sfc_state%arrays_allocated) then
-    call allocate_surface_state(sfc_state, G, &
-        use_temperature=use_temperature, &
-        do_integrals=do_integrals, &
-        use_meltpot=use_melt_potential, &
-        use_iceshelves=use_iceshelves &
-    )
-    sfc_state%arrays_allocated = .true.
+    call allocate_surface_state(sfc_state, G, use_temperature=use_temperature, &
+            do_integrals=do_integrals, use_meltpot=use_melt_potential, &
+            use_iceshelves=use_iceshelves, sfc_state_in=sfc_state_in, turns=turns)
   endif
 
   if (use_temperature) then
@@ -585,15 +630,15 @@ subroutine MOM_thermovar_chksum(mesg, tv, G, US)
   ! counts, there must be no redundant points, so all variables use is..ie
   ! and js...je as their extent.
   if (associated(tv%T)) &
-    call hchksum(tv%T, mesg//" tv%T", G%HI, scale=US%C_to_degC)
+    call hchksum(tv%T, mesg//" tv%T", G%HI, unscale=US%C_to_degC)
   if (associated(tv%S)) &
-    call hchksum(tv%S, mesg//" tv%S", G%HI, scale=US%S_to_ppt)
+    call hchksum(tv%S, mesg//" tv%S", G%HI, unscale=US%S_to_ppt)
   if (associated(tv%frazil)) &
-    call hchksum(tv%frazil, mesg//" tv%frazil", G%HI, scale=US%Q_to_J_kg*US%RZ_to_kg_m2)
+    call hchksum(tv%frazil, mesg//" tv%frazil", G%HI, unscale=US%Q_to_J_kg*US%RZ_to_kg_m2)
   if (associated(tv%salt_deficit)) &
-    call hchksum(tv%salt_deficit, mesg//" tv%salt_deficit", G%HI, scale=US%RZ_to_kg_m2*US%S_to_ppt)
+    call hchksum(tv%salt_deficit, mesg//" tv%salt_deficit", G%HI, unscale=US%RZ_to_kg_m2*US%S_to_ppt)
   if (associated(tv%TempxPmE)) &
-    call hchksum(tv%TempxPmE, mesg//" tv%TempxPmE", G%HI, scale=US%RZ_to_kg_m2*US%C_to_degC)
+    call hchksum(tv%TempxPmE, mesg//" tv%TempxPmE", G%HI, unscale=US%RZ_to_kg_m2*US%C_to_degC)
 end subroutine MOM_thermovar_chksum
 
 end module MOM_variables

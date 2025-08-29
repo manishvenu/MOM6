@@ -57,8 +57,8 @@ type, public :: neutral_diffusion_CS ; private
   logical :: tapering = .false. !< If true, neutral diffusion linearly decays towards zero within a
                       !! transition zone defined using boundary layer depths. Only available when
                       !! interior_only=true.
-  logical :: KhTh_use_ebt_struct !< If true, uses the equivalent barotropic structure
-                                 !! as the vertical structure of tracer diffusivity.
+  logical :: KhTh_use_vert_struct !< If true, uses vertical structure
+                                 !! for tracer diffusivity.
   logical :: use_unmasked_transport_bug !< If true, use an older form for the accumulation of
                       !! neutral-diffusion transports that were unmasked, as used prior to Jan 2018.
   real,    allocatable, dimension(:,:)  :: hbl    !< Boundary layer depth [H ~> m or kg m-2]
@@ -67,7 +67,7 @@ type, public :: neutral_diffusion_CS ; private
                                                   !! at cell interfaces [nondim]
   real,    allocatable, dimension(:) :: coeff_r   !< Non-dimensional coefficient in the right column,
                                                   !! at cell interfaces [nondim]
-  ! Array used when KhTh_use_ebt_struct is true
+  ! Array used when KhTh_use_vert_struct is true
   real,    allocatable, dimension(:,:,:) :: Coef_h !< Coef_x and Coef_y averaged at t-points [L2 ~> m2]
   ! Positions of neutral surfaces in both the u, v directions
   real,    allocatable, dimension(:,:,:) :: uPoL  !< Non-dimensional position with left layer uKoL-1, u-point [nondim]
@@ -152,6 +152,8 @@ logical function neutral_diffusion_init(Time, G, GV, US, param_file, diag, EOS, 
   logical :: debug                ! If true, write verbose checksums for debugging purposes.
   logical :: boundary_extrap      ! Indicate whether high-order boundary
                                   !! extrapolation should be used within boundary cells.
+  logical :: om4_remap_via_sub_cells ! If true, use the OM4 remapping algorithm
+  logical :: KhTh_use_ebt_struct, KhTh_use_sqg_struct
 
   if (associated(CS)) then
     call MOM_error(FATAL, "neutral_diffusion_init called with associated control structure.")
@@ -196,8 +198,12 @@ logical function neutral_diffusion_init(Time, G, GV, US, param_file, diag, EOS, 
                    "a transition zone defined using boundary layer depths.    "//&
                    "Only applicable when NDIFF_INTERIOR_ONLY=True", default=.false.)
   endif
-  call get_param(param_file, mdl, "KHTR_USE_EBT_STRUCT", CS%KhTh_use_ebt_struct, &
+  call get_param(param_file, mdl, "KHTR_USE_EBT_STRUCT", KhTh_use_ebt_struct, &
                  "If true, uses the equivalent barotropic structure "//&
+                 "as the vertical structure of the tracer diffusivity.",&
+                 default=.false.,do_not_log=.true.)
+  call get_param(param_file, mdl, "KHTR_USE_SQG_STRUCT", KhTh_use_sqg_struct, &
+                 "If true, uses the surface geostrophic structure "//&
                  "as the vertical structure of the tracer diffusivity.",&
                  default=.false.,do_not_log=.true.)
   call get_param(param_file, mdl, "NDIFF_USE_UNMASKED_TRANSPORT_BUG", CS%use_unmasked_transport_bug, &
@@ -213,7 +219,7 @@ logical function neutral_diffusion_init(Time, G, GV, US, param_file, diag, EOS, 
                  "Values of 20240330 or below recover the answers from the original form of the "//&
                  "neutral diffusion code, while higher values use mathematically equivalent "//&
                  "expressions that recover rotational symmetry.", &
-                 default=20240101) !### Change this default later to default_answer_date.
+                 default=default_answer_date)
 
   ! Initialize and configure remapping
   if ( .not.CS%continuous_reconstruction ) then
@@ -232,8 +238,15 @@ logical function neutral_diffusion_init(Time, G, GV, US, param_file, diag, EOS, 
                  "that were in use at the end of 2018.  Higher values result in the use of more "//&
                  "robust and accurate forms of mathematically equivalent expressions.", &
                  default=default_answer_date, do_not_log=.not.GV%Boussinesq)
+    call get_param(param_file, mdl, "REMAPPING_USE_OM4_SUBCELLS", om4_remap_via_sub_cells, &
+                   do_not_log=.true., default=.true.)
+    call get_param(param_file, mdl, "NDIFF_REMAPPING_USE_OM4_SUBCELLS", om4_remap_via_sub_cells, &
+                 "If true, use the OM4 remapping-via-subcells algorithm for neutral diffusion. "//&
+                 "See REMAPPING_USE_OM4_SUBCELLS for more details. "//&
+                 "We recommend setting this option to false.", default=om4_remap_via_sub_cells)
     if (.not.GV%Boussinesq) CS%remap_answer_date = max(CS%remap_answer_date, 20230701)
     call initialize_remapping( CS%remap_CS, string, boundary_extrapolation=boundary_extrap, &
+                               om4_remap_via_sub_cells=om4_remap_via_sub_cells, &
                                answer_date=CS%remap_answer_date )
     call extract_member_remapping_CS(CS%remap_CS, degree=CS%deg)
     call get_param(param_file, mdl, "NEUTRAL_POS_METHOD", CS%neutral_pos_method,   &
@@ -290,7 +303,8 @@ logical function neutral_diffusion_init(Time, G, GV, US, param_file, diag, EOS, 
     endif
   endif
 
-  if (CS%KhTh_use_ebt_struct) &
+  CS%KhTh_use_vert_struct = KhTh_use_ebt_struct .or. KhTh_use_sqg_struct
+  if (CS%KhTh_use_vert_struct) &
      allocate(CS%Coef_h(G%isd:G%ied,G%jsd:G%jed,SZK_(GV)+1), source=0.)
 
   ! Store a rescaling factor for use in diagnostic messages.
@@ -618,11 +632,11 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
   real, dimension(SZIB_(G),SZJ_(G),CS%nsurf-1) :: uFlx        ! Zonal flux of tracer in units that vary between a
                         ! thickness times a concentration ([C H ~> degC m or degC kg m-2] for temperature) or a
                         ! volume or mass times a concentration ([C H L2 ~> degC m3 or degC kg] for temperature),
-                        ! depending on the setting of CS%KhTh_use_ebt_struct.
+                        ! depending on the setting of CS%KhTh_use_vert_struct.
   real, dimension(SZI_(G),SZJB_(G),CS%nsurf-1) :: vFlx        ! Meridional flux of tracer in units that vary between a
                         ! thickness times a concentration ([C H ~> degC m or degC kg m-2] for temperature) or a
                         ! volume or mass times a concentration ([C H L2 ~> degC m3 or degC kg] for temperature),
-                        ! depending on the setting of CS%KhTh_use_ebt_struct.
+                        ! depending on the setting of CS%KhTh_use_vert_struct.
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV))    :: tendency    ! tendency array for diagnostics
                                                               ! [H conc T-1 ~> m conc s-1 or kg m-2 conc s-1]
                                                               ! For temperature these units are
@@ -667,7 +681,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     endif
   endif
 
-  if (CS%KhTh_use_ebt_struct) then
+  if (CS%KhTh_use_vert_struct) then
     ! Compute Coef at h points
     CS%Coef_h(:,:,:) = 0.
     do j = G%jsc,G%jec ; do i = G%isc,G%iec
@@ -700,7 +714,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     vFlx(:,:,:) = 0.
 
     ! x-flux
-    if (CS%KhTh_use_ebt_struct) then
+    if (CS%KhTh_use_vert_struct) then
       if (CS%tapering) then
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
           if (G%mask2dCu(I,j)>0.) then
@@ -764,7 +778,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     endif
 
     ! y-flux
-    if (CS%KhTh_use_ebt_struct) then
+    if (CS%KhTh_use_vert_struct) then
       if (CS%tapering) then
         do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
           if (G%mask2dCv(i,J)>0.) then
@@ -831,7 +845,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
 
     ! Update the tracer concentration from divergence of neutral diffusive flux components, noting
     ! that uFlx and vFlx use an unexpected sign convention.
-    if (CS%KhTh_use_ebt_struct) then
+    if (CS%KhTh_use_vert_struct) then
       do j = G%jsc,G%jec ; do i = G%isc,G%iec
         if (G%mask2dT(i,j)>0.) then
           if (CS%ndiff_answer_date <= 20240330) then
@@ -934,7 +948,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     ! Note sign corresponds to downgradient flux convention.
     if (tracer%id_dfx_2d > 0) then
 
-      if (CS%KhTh_use_ebt_struct) then
+      if (CS%KhTh_use_vert_struct) then
         do j = G%jsc,G%jec ; do I = G%isc-1,G%iec
           trans_x_2d(I,j) = 0.
           if (G%mask2dCu(I,j)>0.) then
@@ -963,7 +977,7 @@ subroutine neutral_diffusion(G, GV, h, Coef_x, Coef_y, dt, Reg, US, CS)
     ! Note sign corresponds to downgradient flux convention.
     if (tracer%id_dfy_2d > 0) then
 
-      if (CS%KhTh_use_ebt_struct) then
+      if (CS%KhTh_use_vert_struct) then
         do J = G%jsc-1,G%jec ; do i = G%isc,G%iec
           trans_y_2d(i,J) = 0.
           if (G%mask2dCv(i,J)>0.) then
@@ -1117,6 +1131,7 @@ end subroutine interface_scalar
 
 !> Returns the PPM quasi-fourth order edge value at k+1/2 following
 !! equation 1.6 in Colella & Woodward, 1984: JCP 54, 174-201.
+!! The returned units are the same as those of Ak (e.g. [C ~> degC] for temperature).
 real function ppm_edge(hkm1, hk, hkp1, hkp2,  Ak, Akp1, Pk, Pkp1, h_neglect)
   real, intent(in) :: hkm1 !< Width of cell k-1 in [H ~> m or kg m-2] or other units
   real, intent(in) :: hk   !< Width of cell k in [H ~> m or kg m-2] or other units
@@ -1275,9 +1290,9 @@ subroutine PLM_diff(nk, h, S, c_method, b_method, diff)
 
 end subroutine PLM_diff
 
-!> Returns the cell-centered second-order finite volume (unlimited PLM) slope
-!! using three consecutive cell widths and average values. Slope is returned
-!! as a difference across the central cell (i.e. units of scalar S).
+!> Returns the cell-centered second-order finite volume (unlimited PLM) slope using three
+!! consecutive cell widths and average values. Slope is returned as a difference across
+!! the central cell (i.e. units of scalar S, e.g. [C ~> degC] for temperature).
 !! Discretization follows equation 1.7 in Colella & Woodward, 1984: JCP 54, 174-201.
 real function fv_diff(hkm1, hk, hkp1, Skm1, Sk, Skp1)
   real, intent(in) :: hkm1 !< Left cell width [H ~> m or kg m-2] or other arbitrary units
@@ -1558,7 +1573,7 @@ subroutine find_neutral_surface_positions_continuous(nk, Pl, Tl, Sl, dRdTl, dRdS
 end subroutine find_neutral_surface_positions_continuous
 
 !> Returns the non-dimensional position between Pneg and Ppos where the
-!! interpolated density difference equals zero.
+!! interpolated density difference equals zero [nondim].
 !! The result is always bounded to be between 0 and 1.
 real function interpolate_for_nondim_position(dRhoNeg, Pneg, dRhoPos, Ppos)
   real, intent(in) :: dRhoNeg !< Negative density difference [R ~> kg m-3]
@@ -1568,34 +1583,39 @@ real function interpolate_for_nondim_position(dRhoNeg, Pneg, dRhoPos, Ppos)
 
   character(len=120) :: mesg
 
-  if (Ppos < Pneg) then
-    call MOM_error(FATAL, 'interpolate_for_nondim_position: Houston, we have a problem! Ppos<Pneg')
-  elseif (dRhoNeg>dRhoPos) then
-    write(stderr,*) 'dRhoNeg, Pneg, dRhoPos, Ppos=',dRhoNeg, Pneg, dRhoPos, Ppos
-    write(mesg,*) 'dRhoNeg, Pneg, dRhoPos, Ppos=', dRhoNeg, Pneg, dRhoPos, Ppos
-    call MOM_error(WARNING, 'interpolate_for_nondim_position: '//trim(mesg))
-  elseif (dRhoNeg>dRhoPos) then !### Does this duplicated test belong here?
-    call MOM_error(FATAL, 'interpolate_for_nondim_position: Houston, we have a problem! dRhoNeg>dRhoPos')
-  endif
-  if (Ppos<=Pneg) then ! Handle vanished or inverted layers
-    interpolate_for_nondim_position = 0.5
-  elseif ( dRhoPos - dRhoNeg > 0. ) then
-    interpolate_for_nondim_position = min( 1., max( 0., -dRhoNeg / ( dRhoPos - dRhoNeg ) ) )
-  elseif ( dRhoPos - dRhoNeg == 0) then
-    if (dRhoNeg>0.) then
-      interpolate_for_nondim_position = 0.
-    elseif (dRhoNeg<0.) then
-      interpolate_for_nondim_position = 1.
-    else ! dRhoPos = dRhoNeg = 0
+  if ((Ppos > Pneg) .and. (dRhoPos - dRhoNeg >= 0. )) then
+    if ( dRhoPos - dRhoNeg > 0. ) then
+      interpolate_for_nondim_position = min( 1., max( 0., -dRhoNeg / ( dRhoPos - dRhoNeg ) ) )
+    elseif (dRhoPos - dRhoNeg == 0) then
+      if (dRhoNeg > 0.) then
+        interpolate_for_nondim_position = 0.
+      elseif (dRhoNeg < 0.) then
+        interpolate_for_nondim_position = 1.
+      else ! dRhoPos = dRhoNeg = 0
+        interpolate_for_nondim_position = 0.5
+      endif
+    else ! dRhoPos - dRhoNeg < 0
       interpolate_for_nondim_position = 0.5
     endif
-  else ! dRhoPos - dRhoNeg < 0
+  elseif (Ppos == Pneg) then ! Handle vanished or inverted layers
     interpolate_for_nondim_position = 0.5
+  else ! ((Ppos < Pneg) .or. (dRhoNeg > dRhoPos) )
+    ! Error handling for problematic cases.  It is expected that this should never occur.
+    write(mesg,*) 'dRhoNeg, Pneg, dRhoPos, Ppos', dRhoNeg, Pneg, dRhoPos, Ppos
+    call MOM_error(WARNING, 'interpolate_for_nondim_position: '//trim(mesg))
+    !  write(stderr,*) trim(mesg)
+    if ((Ppos < Pneg) .and. (dRhoNeg > dRhoPos)) then
+      mesg = '(Ppos < Pneg) and (dRhoNeg > dRhoPos)'
+    elseif (Ppos < Pneg) then
+      mesg = 'Ppos < Pneg'
+    elseif (dRhoNeg > dRhoPos) then
+      mesg = trim(mesg)//'; dRhoNeg > dRhoPos'
+    else  ! This should never happen.
+      mesg = 'Unexpected failure.'
+    endif
+    call MOM_error(FATAL, 'interpolate_for_nondim_position: '//trim(mesg))
   endif
-  if ( interpolate_for_nondim_position < 0. ) &
-    call MOM_error(FATAL, 'interpolate_for_nondim_position: Houston, we have a problem! Pint < Pneg')
-  if ( interpolate_for_nondim_position > 1. ) &
-    call MOM_error(FATAL, 'interpolate_for_nondim_position: Houston, we have a problem! Pint > Ppos')
+
 end function interpolate_for_nondim_position
 
 !> Higher order version of find_neutral_surface_positions. Returns positions within left/right columns
@@ -1856,7 +1876,8 @@ subroutine mark_unstable_cells(CS, nk, T, S, P, stable_cell)
   enddo
 end subroutine mark_unstable_cells
 
-!> Searches the "other" (searched) column for the position of the neutral surface
+!> Searches the "other" (searched) column for the position of the neutral surface, returning
+!! the fractional postion within the layer [nondim]
 real function search_other_column(CS, ksurf, pos_last, T_from, S_from, P_from, T_top, S_top, P_top, &
                                   T_bot, S_bot, P_bot, T_poly, S_poly ) result(pos)
   type(neutral_diffusion_CS), intent(in   ) :: CS       !< Neutral diffusion control structure
