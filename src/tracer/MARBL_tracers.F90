@@ -872,7 +872,7 @@ subroutine register_MARBL_tracer_segments(CS,GV, tr_Reg, param_file, OBC)
   character(len=256) :: filename
   character(len=32)  :: fieldname
   character(len=20)  :: segnam
-  real               :: value 
+  real               :: value
   if (.NOT. associated(OBC)) return
 
 
@@ -935,7 +935,7 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
   real    :: fesedflux_missing  ! required argument for read_Z_edges() [CU ~> conc]
   integer :: i, j, k, kbot, m, diag_size
   integer :: n, ntr_id, index, num_fields
-  
+
   if (.not.associated(CS)) return
   if (CS%ntr < 1) return
 
@@ -1220,7 +1220,6 @@ subroutine initialize_MARBL_tracers(restart, day, G, GV, US, h, param_file, diag
     end select
   endif
 
-  
   print*, 'MRV: we are in initialization'
   do m=1,CS%ntr
 
