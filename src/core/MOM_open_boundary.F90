@@ -921,10 +921,19 @@ subroutine initialize_segment_data(G, GV, US, OBC, PF)
         ! These are tracers with segments specified in MOM6 style override files
         call parse_segment_data_str(trim(segstr), m, trim(fields(m)), value, filename, fieldname)
         segment%field(m)%genre = ''
-        if (.not. (trim(ADJUSTL(fields(m))) == 'V' .or. trim(ADJUSTL(fields(m))) == 'DVDX' .or. trim(ADJUSTL(fields(m))) == 'Vamp' & 
-            .or. trim(ADJUSTL(fields(m))) == 'Vphase' .or. trim(ADJUSTL(fields(m))) == 'Uamp' .or. trim(ADJUSTL(fields(m))) == 'Uphase' .or. & 
-            trim(ADJUSTL(fields(m))) == 'SSHamp' .or. trim(ADJUSTL(fields(m))) == 'SSHphase' .or. trim(ADJUSTL(fields(m))) == 'U' .or. & 
-            trim(ADJUSTL(fields(m))) == 'DUDY' .or. trim(ADJUSTL(fields(m))) == 'SSH' .or. trim(ADJUSTL(fields(m))) == 'TEMP' .or. trim(ADJUSTL(fields(m))) == 'SALT')) then
+        if (.not. (trim(ADJUSTL(fields(m))) == 'V' .or. &
+                   trim(ADJUSTL(fields(m))) == 'DVDX' .or. &
+                   trim(ADJUSTL(fields(m))) == 'Vamp' .or. &
+                   trim(ADJUSTL(fields(m))) == 'Vphase' .or. &
+                   trim(ADJUSTL(fields(m))) == 'Uamp' .or. &
+                   trim(ADJUSTL(fields(m))) == 'Uphase' .or. &
+                   trim(ADJUSTL(fields(m))) == 'SSHamp' .or. &
+                   trim(ADJUSTL(fields(m))) == 'SSHphase' .or. &
+                   trim(ADJUSTL(fields(m))) == 'U' .or. &
+                   trim(ADJUSTL(fields(m))) == 'DUDY' .or. &
+                   trim(ADJUSTL(fields(m))) == 'SSH' .or. &
+                   trim(ADJUSTL(fields(m))) == 'TEMP' .or. &
+                   trim(ADJUSTL(fields(m))) == 'SALT')) then
               segment%field(m)%genre = 'obgc'
 
         endif
@@ -1956,10 +1965,19 @@ subroutine parse_for_tracer_reservoirs(OBC, PF, use_temperature)
         endif
 
       endif
-      if (.not. (trim(ADJUSTL(fields(m))) == 'V' .or. trim(ADJUSTL(fields(m))) == 'DVDX' .or. trim(ADJUSTL(fields(m))) == 'Vamp' & 
-      .or. trim(ADJUSTL(fields(m))) == 'Vphase' .or. trim(ADJUSTL(fields(m))) == 'Uamp' .or. trim(ADJUSTL(fields(m))) == 'Uphase' .or. & 
-      trim(ADJUSTL(fields(m))) == 'SSHamp' .or. trim(ADJUSTL(fields(m))) == 'SSHphase' .or. trim(ADJUSTL(fields(m))) == 'U' .or. & 
-      trim(ADJUSTL(fields(m))) == 'DUDY' .or. trim(ADJUSTL(fields(m))) == 'SSH' .or. trim(ADJUSTL(fields(m))) == 'TEMP' .or. trim(ADJUSTL(fields(m))) == 'SALT')) then
+      if (.not. (trim(ADJUSTL(fields(m))) == 'V' .or. &
+                 trim(ADJUSTL(fields(m))) == 'DVDX' .or. &
+                 trim(ADJUSTL(fields(m))) == 'Vamp' .or. &
+                 trim(ADJUSTL(fields(m))) == 'Vphase' .or. &
+                 trim(ADJUSTL(fields(m))) == 'Uamp' .or. &
+                 trim(ADJUSTL(fields(m))) == 'Uphase' .or. &
+                 trim(ADJUSTL(fields(m))) == 'SSHamp' .or. &
+                 trim(ADJUSTL(fields(m))) == 'SSHphase' .or. &
+                 trim(ADJUSTL(fields(m))) == 'U' .or. &
+                 trim(ADJUSTL(fields(m))) == 'DUDY' .or. &
+                 trim(ADJUSTL(fields(m))) == 'SSH' .or. &
+                 trim(ADJUSTL(fields(m))) == 'TEMP' .or. &
+                 trim(ADJUSTL(fields(m))) == 'SALT')) then
         print*, 'MRV: parse_for_tracer_Reservoirs: Tracer ', trim(fields(m)), ' at index ', 2+m-salt_ind
         ! Fix this code, but we need a way to properly account for the number of tracers we are on
         if (segment%is_E_or_W_2) then
